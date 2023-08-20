@@ -17,22 +17,23 @@ def open_config_file(config_dir):
     # ensure path are absolute and existing
     weight_path = config["training_parameters"].get("weight_dir", "Weights")
     if not os.path.isabs(weight_path):
-        weight_path = os.path.join(DIR, weight_path)
+        weight_path = os.path.join(config_dir, weight_path)
     config["training_parameters"]["weight_dir"] = weight_path
     if not os.path.exists(weight_path):
-        os.mkdir(SAVED_WEIGHT_PATH)
+        os.mkdir(weight_path)
     log_path = config["training_parameters"].get("log_dir", "Logs")
     if not os.path.isabs(log_path):
-        log_path = os.path.join(DIR, log_path)
+        log_path = os.path.join(config_dir, log_path)
     config["training_parameters"]["log_dir"] = log_path
     if not os.path.exists(log_path):
         os.mkdir(log_path)
-
 
     # copy global dataset parameters to individual datasets
     for i in range(len(config["dataset_list"])):
         config["dataset_list"][i] = merge_dicts(config["dataset_list"][i], config["dataset_parameters"])
         ds = config["dataset_list"][i]
         if not os.path.isabs(ds["path"]):
-            ds["path"] = os.path.join(DIR, ds["path"])
-        assert os.path.exists(ds["path"]), f"dataset {os['path']} not found"
+            ds["path"] = os.path.join(config_dir, ds["path"])
+        assert os.path.exists(ds["path"]), f"dataset {ds['path']} not found"
+
+    return config

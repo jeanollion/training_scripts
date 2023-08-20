@@ -1,6 +1,6 @@
 import argparse
 import os
-from .training_core import open_config_file
+from training_core import open_config_file
 
 import numpy as np
 import tensorflow as tf
@@ -21,9 +21,9 @@ from datetime import datetime
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
-parser.add_argument("--export_only", type=int, help="skip model training", action="store_true")
-parser.add_argument("--class_number", type=int, help="number of class to predict (only used in export_only mode)", default=3)
-parser.add_argument("--continue_training", type=int, help="if specified, will load weight corresponding to model_idx before training and override them", action="store_true")
+parser.add_argument("--export_only", action="store_true", help="skip model training")
+parser.add_argument("--class_number", type=int, default=3, help="number of class to predict (only used in export_only mode)")
+parser.add_argument("--continue_training", action="store_true", help="if specified, will load weight corresponding to model_idx before training and override them")
 parser.add_argument("--export_dir", type=str, help="directory to export saved model to")
 parser.add_argument("--n_epochs", type=int, help="number of training epochs")
 parser.add_argument("--patience", type=int, help="patience for learninig rate decrease during training")
@@ -41,7 +41,7 @@ N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 5
 PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
 LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
 WORKERS = t_p.get("multiprocessing_workers", 1)
-
+print(f"configuration file found. ")
 def init_iterator(**ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_name = ds_kwargs.get("channel_name", "raw")
@@ -81,10 +81,12 @@ def init_model(n_classes):
     return get_unet(n_classes, skip_omit=0)
     
 if args.export_only:
+    print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
     model = init_model(args.class_number)
-    assert os.path.exists(WEIGHT_PATH), "weight_path not found"
+    assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
     model.load_weights(WEIGHT_PATH)
 else:
+    print(f"init iterator...")
     # init iterator
     iterator_list, weight_list, concat_proportion = [], [], []
     for conf in config["dataset_list"]:
@@ -107,14 +109,17 @@ else:
     else:
         train_it = iterator_list[0]
         weights = weight_list[0]
+    print(f"number of iterators: {len(iterator_list)}")
 
     # init model
+    print("init model...")
     loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
     model = init_model(weights.shape[0])
     model.compile(optimizer=Adam(LR), loss=loss)
 
     if args.continue_training:
         if os.path.exists(WEIGHT_PATH):
+            print(f"loading weights : {WEIGHT_PATH}")
             model.load_weights(WEIGHT_PATH)
 
     # perform training
@@ -125,7 +130,7 @@ else:
     checkpoint = ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
     lr_schedule = ReduceLROnPlateau(min_lr=5e-7, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
     tensorboard_callback = TensorBoard(LOG_PATH, histogram_freq=1)
-
+    print("start training...")
     model.fit(train_it, epochs=N_EPOCHS, validation_data=test_it, callbacks=[lr_schedule, checkpoint, tensorboard_callback, TerminateOnNaN()], workers=WORKERS, use_multiprocessing=True)
 
 # export model
