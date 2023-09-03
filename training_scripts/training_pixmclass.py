@@ -5,7 +5,7 @@ from training_core import open_config_file
 import numpy as np
 import tensorflow as tf
 import h5py
-from pix_mclass.pre_processing import get_random_scaling_function, sometimes, apply_successively, random_gaussian_blur, add_gaussian_noise
+from dataset_iterator.pre_processing import get_random_scaling_function, sometimes, apply_successively, random_gaussian_blur, add_gaussian_noise
 from pix_mclass.training import get_iterator
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
 from pix_mclass.utils import ensure_multiplicity
@@ -26,17 +26,17 @@ parser.add_argument("--class_number", type=int, default=3, help="number of class
 parser.add_argument("--continue_training", action="store_true", help="if specified, will load weight corresponding to model_idx before training and override them")
 parser.add_argument("--export_dir", type=str, help="directory to export saved model to")
 parser.add_argument("--n_epochs", type=int, help="number of training epochs")
-parser.add_argument("--patience", type=int, help="patience for learninig rate decrease during training")
+parser.add_argument("--patience", type=int, help="patience for learning rate decrease during training")
 parser.add_argument("--learning_rate", type=int, help="initial learning rate for training")
 args = parser.parse_args()
 
 # get parameters
 config = open_config_file(args.config_dir)
 t_p = config["training_parameters"]
-model_name = t_p["model_name"]
-WEIGHT_PATH = os.path.join(t_p["weight_dir"],  model_name + (f"_{args.model_idx}" if args.model_idx is not None else "") + ".h5")
-LOG_PATH = os.path.join(t_p["log_dir"], model_name + (f"_{args.model_idx}" if args.model_idx is not None else ""))
-SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name + (f"_{args.model_idx}" if args.model_idx is not None else ""))
+model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
+WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
+LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], model_name ) if len(t_p["log_dir"])>0 else os.path.join(args.config_dir, model_name )
+SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
 N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
 PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
 LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
@@ -44,34 +44,35 @@ WORKERS = t_p.get("multiprocessing_workers", 1)
 print(f"configuration file found. ")
 def init_iterator(**ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
-    channel_name = ds_kwargs.get("channel_name", "raw")
+    channel_names = ds_kwargs.get("channel_name", "raw")
+    if not isinstance(channel_names, (list, tuple)):
+        channel_names = [channel_names]
     classes_name = ds_kwargs.get("classes_name", "classes")
     dataset = ds_kwargs["path"]
     weights = get_class_weights(dataset, classes_name)
-    scaling_fun = get_random_scaling_function("RANDOM_MIN_MAX", dataset, channel_name=channel_name,
-                                              **data_aug_params.get("scaling_parameters", {}))
+    scaling_parameters = data_aug_params.get("scaling_parameters", None)
+    if scaling_parameters is not None:
+        scaling_parameters = ensure_multiplicity(len(channel_names), scaling_parameters)
+    else:
+        scaling_parameters = [{}]**len(channel_names)
+    scaling_funs = [get_random_scaling_function(scaling_parameters[i].pop("mode", "RANDOM_CENTILES"), dataset, channel_name=channel_names[i], **scaling_parameters[i]) for i in range(len(channel_names))]
     noise_sigma = data_aug_params.get("gaussian_noise_sigma", [0.05, 0.15])
     blur_sigma = data_aug_params.get("gaussian_blur_sigma", [1, 2])
     if noise_sigma is not None and blur_sigma is not None:
-        scaling_fun = apply_successively(scaling_fun, sometimes(
-            apply_successively(lambda img: random_gaussian_blur(img, sigma=blur_sigma),
-                               lambda img: add_gaussian_noise(img, sigma=noise_sigma))))
+        scaling_funs = [apply_successively(scaling_funs[i], sometimes( apply_successively(lambda img: random_gaussian_blur(img, sigma=blur_sigma), lambda img: add_gaussian_noise(img, sigma=noise_sigma)))) for i in range(len(channel_names)) ]
     elif noise_sigma is not None:
-        scaling_fun = apply_successively(scaling_fun,
-                                         sometimes(lambda img: add_gaussian_noise(img, sigma=noise_sigma)))
+        scaling_funs = [apply_successively(scaling_funs[i], sometimes(lambda img: add_gaussian_noise(img, sigma=noise_sigma))) for i in range(len(channel_names)) ]
     elif blur_sigma is not None:
-        scaling_fun = apply_successively(scaling_fun,
-                                         sometimes(lambda img: random_gaussian_blur(img, sigma=noise_sigma)))
+        scaling_funs = [apply_successively(scaling_funs[i], sometimes(lambda img: random_gaussian_blur(img, sigma=noise_sigma)))  for i in range(len(channel_names)) ]
 
     tile_shape = ds_kwargs.get("tile_shape", (512, 512))
     ensure_multiplicity(2, tile_shape)
     batch_size = ds_kwargs["batch_size"]
     n_tiles = ds_kwargs.get("n_tiles", -1)
     if n_tiles <= 0:
-        batch_size, n_tiles = get_optimal_tiling(dataset, channel_name, batch_size, tile_shape,
-                                                 ds_kwargs.get("tile_overlap_fraction", 1. / 4))
+        batch_size, n_tiles = get_optimal_tiling(dataset, channel_names[0], batch_size, tile_shape,  ds_kwargs.get("tile_overlap_fraction", 1. / 4))
 
-    return get_iterator(dataset, scaling_fun, channel_name, classes_name,
+    return get_iterator(dataset, scaling_funs, channel_names, classes_name,
                         train_group_keyword=ds_kwargs.get("group_keyword", None),
                         patch_shape=tile_shape, n_tiles=n_tiles, batch_size=batch_size, dtype="float32",
                         elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
