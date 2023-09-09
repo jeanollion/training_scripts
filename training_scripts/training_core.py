@@ -23,7 +23,7 @@ def open_config_file(config_dir):
     config["training_parameters"]["weight_dir"] = weight_path
     if not os.path.exists(weight_path):
         os.mkdir(weight_path)
-    log_path = config["training_parameters"].get("log_dir", "")
+    log_path = config["training_parameters"].get("log_dir", "Logs")
     if len(log_path) == 0:
         log_path = config_dir
     elif not os.path.isabs(log_path):

@@ -31,6 +31,7 @@ parser.add_argument("--learning_rate", type=int, help="initial learning rate for
 args = parser.parse_args()
 
 # get parameters
+print(f"files in config_dir={args.config_dir}: {os.listdir(args.config_dir)}")
 config = open_config_file(args.config_dir)
 t_p = config["training_parameters"]
 model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
@@ -54,7 +55,7 @@ def init_iterator(**ds_kwargs):
     if scaling_parameters is not None:
         scaling_parameters = ensure_multiplicity(len(channel_names), scaling_parameters)
     else:
-        scaling_parameters = [{}]**len(channel_names)
+        scaling_parameters = [{}]*len(channel_names)
     scaling_funs = [get_random_scaling_function(scaling_parameters[i].pop("mode", "RANDOM_CENTILES"), dataset, channel_name=channel_names[i], **scaling_parameters[i]) for i in range(len(channel_names))]
     noise_sigma = data_aug_params.get("gaussian_noise_sigma", [0.05, 0.15])
     blur_sigma = data_aug_params.get("gaussian_blur_sigma", [1, 2])
