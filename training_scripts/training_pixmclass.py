@@ -1,49 +1,49 @@
 import argparse
 import os
-from training_core import open_config_file
-
+import random
 import numpy as np
 import tensorflow as tf
 import h5py
-from dataset_iterator.pre_processing import get_random_scaling_function, sometimes, apply_successively, random_gaussian_blur, add_gaussian_noise
+from dataset_iterator.image_data_generator import get_image_data_generator
 from pix_mclass.training import get_iterator
-from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
 from pix_mclass.utils import ensure_multiplicity
 from dataset_iterator.helpers import get_optimal_tiling
-from dataset_iterator import ConcatIterator
-
 from pix_mclass import get_unet
-from tensorflow.keras.optimizers import Adam
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
-from tensorflow.keras.callbacks import ReduceLROnPlateau, TensorBoard, ModelCheckpoint, TerminateOnNaN
-from datetime import datetime
+from training_core import open_config_file, concatenate_iterators
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
-parser.add_argument("--export_only", action="store_true", help="skip model training")
+parser.add_argument("--load_model_idx", type=int, help="index of model to load weights from")
+parser.add_argument("--export_only", action="store_true", help="skip model training and export model")
+parser.add_argument("--test_data_augmentation", action="store_true", help="generate and store example of augmented data")
 parser.add_argument("--class_number", type=int, default=3, help="number of class to predict (only used in export_only mode)")
-parser.add_argument("--continue_training", action="store_true", help="if specified, will load weight corresponding to model_idx before training and override them")
 parser.add_argument("--export_dir", type=str, help="directory to export saved model to")
 parser.add_argument("--n_epochs", type=int, help="number of training epochs")
+parser.add_argument("--step_number", type=int, help="number of training steps per epoch")
 parser.add_argument("--patience", type=int, help="patience for learning rate decrease during training")
-parser.add_argument("--learning_rate", type=int, help="initial learning rate for training")
+parser.add_argument("--learning_rate", type=float, help="initial learning rate for training")
 args = parser.parse_args()
 
 # get parameters
 print(f"files in config_dir={args.config_dir}: {os.listdir(args.config_dir)}")
-config = open_config_file(args.config_dir)
+config = open_config_file(args.config_dir, args.test_data_augmentation)
 t_p = config["training_parameters"]
 model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
+load_model_name = t_p["load_model_name"] + (f"_{args.load_model_idx}" if args.load_model_idx is not None else "") if "load_model_name" in t_p else None
 WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
+LOAD_WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  load_model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  load_model_name + ".h5") if load_model_name is not None else None
 LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], model_name ) if len(t_p["log_dir"])>0 else os.path.join(args.config_dir, model_name )
 SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
 N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
+STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
 PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
 LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
 WORKERS = t_p.get("multiprocessing_workers", 1)
+SHUFFLE = not args.test_data_augmentation
 print(f"configuration file found. ")
-def init_iterator(**ds_kwargs):
+def init_iterator(step_number, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_names = ds_kwargs.get("channel_name", "raw")
     if not isinstance(channel_names, (list, tuple)):
@@ -54,86 +54,116 @@ def init_iterator(**ds_kwargs):
     scaling_parameters = data_aug_params.get("scaling_parameters", None)
     if scaling_parameters is not None:
         scaling_parameters = ensure_multiplicity(len(channel_names), scaling_parameters)
+        for i, sp in enumerate(scaling_parameters):
+            sp["dataset"] = dataset
+            sp["channel_name"] = channel_names[i]
     else:
         scaling_parameters = [{}]*len(channel_names)
-    scaling_funs = [get_random_scaling_function(scaling_parameters[i].pop("mode", "RANDOM_CENTILES"), dataset, channel_name=channel_names[i], **scaling_parameters[i]) for i in range(len(channel_names))]
-    noise_sigma = data_aug_params.get("gaussian_noise_sigma", [0.05, 0.15])
-    blur_sigma = data_aug_params.get("gaussian_blur_sigma", [1, 2])
-    if noise_sigma is not None and blur_sigma is not None:
-        scaling_funs = [apply_successively(scaling_funs[i], sometimes( apply_successively(lambda img: random_gaussian_blur(img, sigma=blur_sigma), lambda img: add_gaussian_noise(img, sigma=noise_sigma)))) for i in range(len(channel_names)) ]
-    elif noise_sigma is not None:
-        scaling_funs = [apply_successively(scaling_funs[i], sometimes(lambda img: add_gaussian_noise(img, sigma=noise_sigma))) for i in range(len(channel_names)) ]
-    elif blur_sigma is not None:
-        scaling_funs = [apply_successively(scaling_funs[i], sometimes(lambda img: random_gaussian_blur(img, sigma=noise_sigma)))  for i in range(len(channel_names)) ]
+    scaling_data_generators = [get_image_data_generator(scaling_parameters=scaling_parameters[i]) for i in range(len(channel_names))]
 
-    tile_shape = ds_kwargs.get("tile_shape", (512, 512))
-    ensure_multiplicity(2, tile_shape)
+    illumination_parameters = data_aug_params.get("illumination_parameters", None)
+    if illumination_parameters is not None:
+        illumination_generator = get_image_data_generator(illumination_parameters=illumination_parameters)
+        print(f"illm variation 2d: {illumination_generator.illumination_variation_2d}, n_points: {illumination_generator.illumination_variation_n_points}, intensity: {illumination_generator.illumination_variation_intensity}")
+    else:
+        illumination_generator = None
+    
     batch_size = ds_kwargs["batch_size"]
-    n_tiles = ds_kwargs.get("n_tiles", -1)
-    if n_tiles <= 0:
-        batch_size, n_tiles = get_optimal_tiling(dataset, channel_names[0], batch_size, tile_shape,  ds_kwargs.get("tile_overlap_fraction", 1. / 4))
-
-    return get_iterator(dataset, scaling_funs, channel_names, classes_name,
-                        train_group_keyword=ds_kwargs.get("group_keyword", None),
-                        patch_shape=tile_shape, n_tiles=n_tiles, batch_size=batch_size, dtype="float32",
-                        elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
-                        ), weights
+    input_shape = ds_kwargs.get("input_shape", (512, 512))
+    ensure_multiplicity(2, input_shape)
+    tiling_parameters = ds_kwargs.get("tiling_parameters", None)
+    if tiling_parameters is not None:
+        tiling_parameters["tile_shape"] = input_shape
+        n_tiles = tiling_parameters.get("n_tiles", -1)
+        if n_tiles <= 0:
+            batch_size, n_tiles = get_optimal_tiling(dataset, channel_names[0], batch_size, input_shape,  tiling_parameters.pop("tile_overlap_fraction", 1. / 4))
+        tiling_parameters["n_tiles"] = n_tiles
+        
+    return get_iterator(dataset, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
+        input_channel_keywords=channel_names, class_keyword=classes_name,
+        train_group_keyword=ds_kwargs.get("group_keyword", None),
+        tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number, dtype="float32", shuffle=SHUFFLE,
+        elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
+        ), weights
 
 def init_model(n_classes):
-    return get_unet(n_classes, skip_omit=0)
-    
+    model = get_unet(n_classes, skip_omit=0)
+    if args.export_only:
+        assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
+        model.load_weights(WEIGHT_PATH)
+    elif LOAD_WEIGHT_PATH is not None:
+        model.load_weights(LOAD_WEIGHT_PATH)
+    return model
+
 if args.export_only:
     print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
     model = init_model(args.class_number)
     assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
     model.load_weights(WEIGHT_PATH)
+    # export model
+    tf.saved_model.save(model, SAVED_MODEL_PATH)
 else:
-    print(f"init iterator...")
-    # init iterator
-    iterator_list, weight_list, concat_proportion = [], [], []
-    for conf in config["dataset_list"]:
-        it, weights = init_iterator(**conf)
-        iterator_list.append(it)
-        weight_list.append(weights)
-        concat_proportion.append(conf.get("concat_proportion", 1))
-
-    if len(iterator_list) > 1:
+    print(f"init iterator...", flush=True)
+    train_it, weight_list = concatenate_iterators(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
+    test_it = None
+    if len(weight_list) > 1:
         # weighted sum of weights
         weights = np.zeros_like(weight_list[0])
         tot = 0
-        for it, w in zip(iterator_list, weight_list):
+        for it, w in zip(train_it.iterators, weight_list):
             l = len(it)
             tot += l
             weights += w * l
         weights /= tot
-        train_it = ConcatIterator(iterator_list, proportion=concat_proportion,
-                                  batch_size=config.get("concat_batch_size", 1))
     else:
-        train_it = iterator_list[0]
         weights = weight_list[0]
-    print(f"number of iterators: {len(iterator_list)}")
+    print(f"Class weights: {weights}", flush=True)
+    if args.test_data_augmentation:
+        test_param = config.get("test_data_augmentation_parameters", {})
+        input_only = test_param.get("input_only", True)
+        n_iterations = test_param.get("iteration_number", 50)
+        file_path = os.path.join("/data", "test_data_augmentation.h5")
+        print(f"generating data augmented images : n_iterations: {n_iterations} output file: {file_path} ...", flush=True)
+        idx = test_param.get("batch_index", -1)
+        if idx < 0 or idx >= len(train_it):
+            idx = random.randint(0, len(train_it))
+        inputs = []
+        outputs = []
+        print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
+        for i in range(n_iterations):
+            input, output = train_it[idx]
+            inputs.append(input)
+            if not input_only:
+                outputs.append(output)
+            print(f"{i + 1}/{n_iterations}", flush=True)
+        input = np.stack(inputs, 1)
+        transpose_axis = [0, 1, 4, 2, 3]
+        input = np.transpose(input, transpose_axis)
+        if not input_only:
+            output = np.stack(outputs, 1)
+            output = np.transpose(output, transpose_axis)
+        print(f"writing {len(outputs) + 1 } x {input.shape} to file: {file_path}", flush=True)
+        with h5py.File(file_path, mode='w') as h5pyFile :
+            h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input", data=input)
+            if not input_only:
+                h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output", data=output)
+    else:
+        # init model
+        print("init model...", flush=True)
+        loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
+        model = init_model(weights.shape[0])
+        model.compile(optimizer=tf.keras.optimizers.Adam(LR), loss=loss)
 
-    # init model
-    print("init model...")
-    loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
-    model = init_model(weights.shape[0])
-    model.compile(optimizer=Adam(LR), loss=loss)
+        # perform training
+        train_it._close_datasetIO()
+        if test_it is not None:
+            test_it._close_datasetIO()
+        checkpoint = tf.keras.callbacks.ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
+        lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=5e-7, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
+        tensorboard_callback = tf.keras.callbacks.TensorBoard(LOG_PATH, histogram_freq=1)
+        ton_cb = tf.keras.callbacks.TerminateOnNaN()
+        print("start training...", flush=True)
+        model.fit(train_it, epochs=N_EPOCHS, validation_data=test_it, callbacks=[lr_schedule, checkpoint, tensorboard_callback, ton_cb], workers=WORKERS, use_multiprocessing=True)
+        # export model
+        tf.saved_model.save(model, SAVED_MODEL_PATH)
 
-    if args.continue_training:
-        if os.path.exists(WEIGHT_PATH):
-            print(f"loading weights : {WEIGHT_PATH}")
-            model.load_weights(WEIGHT_PATH)
-
-    # perform training
-    train_it._close_datasetIO()
-    # if test_it is not None:
-    #    test_it._close_datasetIO()
-    test_it = None
-    checkpoint = ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
-    lr_schedule = ReduceLROnPlateau(min_lr=5e-7, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
-    tensorboard_callback = TensorBoard(LOG_PATH, histogram_freq=1)
-    print("start training...")
-    model.fit(train_it, epochs=N_EPOCHS, validation_data=test_it, callbacks=[lr_schedule, checkpoint, tensorboard_callback, TerminateOnNaN()], workers=WORKERS, use_multiprocessing=True)
-
-# export model
-tf.saved_model.save(model, SAVED_MODEL_PATH)

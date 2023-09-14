@@ -1,0 +1,164 @@
+import argparse
+import os
+import random
+import numpy as np
+import tensorflow as tf
+import h5py
+from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
+from dataset_iterator.helpers import get_optimal_tiling
+from dataset_iterator import extract_tile_random_zoom_function
+from dataset_iterator.utils import ensure_multiplicity, transpose_list
+from distnet_2d.data import DyDxIterator
+from distnet_2d.model.architectures import get_architecture
+from distnet_2d.model.distnet_2d import get_distnet_2d
+from distnet_2d.utils import StopOnLR
+from training_core import open_config_file, concatenate_iterators
+
+parser = argparse.ArgumentParser()
+parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
+parser.add_argument("--model_idx", type=int, help="index of model")
+parser.add_argument("--load_model_idx", type=int, help="index of model to load weights from")
+parser.add_argument("--export_only", action="store_true", help="skip model training")
+parser.add_argument("--test_data_augmentation", action="store_true", help="generate and store example of augmented data")
+parser.add_argument("--export_dir", type=str, help="directory to export saved model to")
+parser.add_argument("--n_epochs", type=int, help="number of training epochs")
+parser.add_argument("--step_number", type=int, help="number of training steps per epoch")
+parser.add_argument("--patience", type=int, help="patience for learning rate decrease during training")
+parser.add_argument("--learning_rate", type=float, help="initial learning rate for training")
+parser.add_argument("--min_learning_rate", type=float, help="minimal learning rate for training")
+args = parser.parse_args()
+
+# get parameters
+print(f"files in config_dir={args.config_dir}: {os.listdir(args.config_dir)}")
+config = open_config_file(args.config_dir, args.test_data_augmentation)
+t_p = config["training_parameters"]
+model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
+load_model_name = t_p["load_model_name"] + (f"_{args.load_model_idx}" if args.load_model_idx is not None else "") if "load_model_name" in t_p else None
+WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
+LOAD_WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  load_model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  load_model_name + ".h5") if load_model_name is not None else None
+LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], model_name ) if len(t_p["log_dir"])>0 else os.path.join(args.config_dir, model_name )
+SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
+N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
+STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
+PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
+LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
+MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 1e-7)
+WORKERS = t_p.get("multiprocessing_workers", 1)
+SHUFFLE = not args.test_data_augmentation
+
+print(f"configuration file found. ")
+def init_iterator(step_number, **ds_kwargs):
+    data_aug_params = ds_kwargs.get("data_augmentation", {})
+    arch_params = config["model_architecture"]
+    channel_name = ds_kwargs.get("channel_name", "raw")
+    dataset = ds_kwargs["path"]
+    input_shape = ds_kwargs["input_shape"]
+    ensure_multiplicity(2, input_shape)
+    batch_size = ds_kwargs["batch_size"]
+    if "tiling_parameters" in ds_kwargs:
+        tiling_parameters = ds_kwargs["tiling_parameters"]
+        tiling_parameters["tile_shape"] = input_shape
+        n_tiles = tiling_parameters.get("n_tiles", -1)
+        if n_tiles <= 0:
+            batch_size, n_tiles = get_optimal_tiling(dataset, channel_name, batch_size, input_shape, tiling_parameters.pop("tile_overlap_fraction", 1. / 4))
+        tiling_parameters["n_tiles"] = n_tiles
+        extract_tiles_fun = extract_tile_random_zoom_function(**tiling_parameters)
+    else:
+        extract_tiles_fun = None
+    scaling_parameters = data_aug_params.get("scaling_parameters", {})
+    scaling_parameters["dataset"] = dataset
+    scaling_parameters["channel_name"] = channel_name
+    data_generator = get_image_data_generator(scaling_parameters=scaling_parameters)
+    mask_generator = get_image_data_generator()
+    illumination_parameters = data_aug_params.get("illumination_parameters", None)
+    if illumination_parameters is not None:
+        illumination_gen = get_image_data_generator(illumination_parameters=illumination_parameters)
+        pp_fun = data_generator_to_channel_postprocessing_fun(illumination_gen, [0])
+    else:
+        pp_fun = None
+    iterator_params = dict(erase_edge_cell_size=data_aug_params.get("erase_edge_cell_size", 0),
+                           aug_remove_prob=data_aug_params.get("static_probability", 0.01),
+                           next=arch_params.get("next", True),
+                           center_mode="MEDOID",
+                           frame_window=arch_params.get("frame_window", 3),
+                           image_data_generators=[data_generator, mask_generator],
+                           elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
+                           channels_postprocessing_function=pp_fun)
+    return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_kwargs.get("group_keyword", None),
+                        batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun,
+                        aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1),
+                        **iterator_params)
+
+def init_model():
+    arch_args = config["model_architecture"]
+    frame_window = arch_args.pop("frame_window", 3)
+    next = arch_args.pop("next", True)
+    arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
+    shape = config["dataset_parameters"]["input_shape"]
+    input_shape = [None if s <= 0 else s for s in shape]
+    model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0)
+    if args.export_only:
+        assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
+        model.load_weights(WEIGHT_PATH)
+    elif LOAD_WEIGHT_PATH is not None:
+        model.load_weights(LOAD_WEIGHT_PATH)
+    return model
+
+if args.export_only:
+    print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
+    model = init_model()
+    # export model
+    tf.saved_model.save(model, SAVED_MODEL_PATH)
+else:
+    print(f"init iterator...", flush=True)
+    train_it = concatenate_iterators(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
+    test_it = None
+    if args.test_data_augmentation:
+        test_param = config.get("test_data_augmentation_parameters", {})
+        input_only = test_param.get("input_only", True)
+        n_iterations = test_param.get("iteration_number", 10)
+        file_path = os.path.join("/data", "test_data_augmentation.h5")
+        idx = test_param.get("batch_index", -1)
+        if idx < 0 or idx >= len(train_it):
+            idx = random.randint(0, len(train_it))
+        inputs = []
+        outputs = []
+        print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
+        for i in range(n_iterations):
+            input, output = train_it[idx]
+            inputs.append(input)
+            if not input_only:
+                outputs.append(output)
+            print(f"{i + 1}/{n_iterations}", flush=True)
+        input = np.stack(inputs, 0)
+        transpose_axis = [4, 0, 1, 2, 3]
+        input = np.transpose(input, transpose_axis)
+        if not input_only:
+            outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
+            outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
+            output_name = ["EDM", "GCDM", "dY", "dY", "Category"]
+        print(f"writing {len(outputs)+1} x {input.shape} to file: {file_path}", flush=True)
+        with h5py.File(file_path, mode='w') as h5pyFile :
+            h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input", data=input)
+            if not input_only:
+                for i, o in enumerate(outputs):
+                    h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output_{i}_{output_name[i]}", data=o)
+    else:
+        # init model
+        print("init model...")
+        model = init_model()
+        model.compile(optimizer=tf.keras.optimizers.Adam(LR))
+        # perform training
+        train_it._close_datasetIO()
+        if test_it is not None:
+            test_it._close_datasetIO()
+        checkpoint = tf.keras.callbacks.ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
+        lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
+        tensorboard_callback = tf.keras.callbacks.TensorBoard(LOG_PATH)
+        callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
+        if tensorboard_callback is not None:
+            callbacks.append(tensorboard_callback)
+        print("start training... ", flush=True)
+        model.fit(train_it, epochs=N_EPOCHS, validation_data=test_it, callbacks=callbacks, workers=WORKERS, use_multiprocessing=True)
+        # export model
+        tf.saved_model.save(model, SAVED_MODEL_PATH)
