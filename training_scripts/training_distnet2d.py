@@ -12,7 +12,7 @@ from distnet_2d.data import DyDxIterator
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils import StopOnLR
-from training_core import open_config_file, concatenate_iterators
+from training_core import open_config_file, get_iterator
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -33,16 +33,16 @@ print(f"files in config_dir={args.config_dir}: {os.listdir(args.config_dir)}")
 config = open_config_file(args.config_dir, args.test_data_augmentation)
 t_p = config["training_parameters"]
 model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
-load_model_name = t_p["load_model_name"] + (f"_{args.load_model_idx}" if args.load_model_idx is not None else "") if "load_model_name" in t_p else None
+load_model_name = t_p["load_model_name"] + (f"_{args.load_model_idx}" if args.load_model_idx is not None else "") if len(t_p.get("load_model_name", "")) > 0 else None
 WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
-LOAD_WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  load_model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  load_model_name + ".h5") if load_model_name is not None else None
+LOAD_WEIGHT_PATH = ( os.path.join(args.config_dir, t_p["weight_dir"],  load_model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  load_model_name + ".h5") ) if load_model_name is not None else None
 LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], model_name ) if len(t_p["log_dir"])>0 else os.path.join(args.config_dir, model_name )
 SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
 N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
 STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
 PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
 LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
-MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 1e-7)
+MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
 WORKERS = t_p.get("multiprocessing_workers", 1)
 SHUFFLE = not args.test_data_augmentation
 
@@ -52,16 +52,9 @@ def init_iterator(step_number, **ds_kwargs):
     arch_params = config["model_architecture"]
     channel_name = ds_kwargs.get("channel_name", "raw")
     dataset = ds_kwargs["path"]
-    input_shape = ds_kwargs["input_shape"]
-    ensure_multiplicity(2, input_shape)
     batch_size = ds_kwargs["batch_size"]
     if "tiling_parameters" in ds_kwargs:
         tiling_parameters = ds_kwargs["tiling_parameters"]
-        tiling_parameters["tile_shape"] = input_shape
-        n_tiles = tiling_parameters.get("n_tiles", -1)
-        if n_tiles <= 0:
-            batch_size, n_tiles = get_optimal_tiling(dataset, channel_name, batch_size, input_shape, tiling_parameters.pop("tile_overlap_fraction", 1. / 4))
-        tiling_parameters["n_tiles"] = n_tiles
         extract_tiles_fun = extract_tile_random_zoom_function(**tiling_parameters)
     else:
         extract_tiles_fun = None
@@ -84,9 +77,9 @@ def init_iterator(step_number, **ds_kwargs):
                            image_data_generators=[data_generator, mask_generator],
                            elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                            channels_postprocessing_function=pp_fun)
-    return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_kwargs.get("group_keyword", None),
+    return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_kwargs.get("keyword", None),
                         batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun,
-                        aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1),
+                        aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=SHUFFLE,
                         **iterator_params)
 
 def init_model():
@@ -111,7 +104,11 @@ if args.export_only:
     tf.saved_model.save(model, SAVED_MODEL_PATH)
 else:
     print(f"init iterator...", flush=True)
-    train_it = concatenate_iterators(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
+    test_param = config.get("test_data_augmentation_parameters", {})
+    if args.test_data_augmentation and "frame_subsampling" in test_param:
+        for ds_params in config["dataset_list"]:
+            ds_params["data_augmentation"]["frame_subsampling"] = test_param["frame_subsampling"]
+    train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
     test_it = None
     if args.test_data_augmentation:
         test_param = config.get("test_data_augmentation_parameters", {})

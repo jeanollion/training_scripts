@@ -10,7 +10,7 @@ from pix_mclass.utils import ensure_multiplicity
 from dataset_iterator.helpers import get_optimal_tiling
 from pix_mclass import get_unet
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
-from training_core import open_config_file, concatenate_iterators
+from training_core import open_config_file, get_iterator
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -24,6 +24,7 @@ parser.add_argument("--n_epochs", type=int, help="number of training epochs")
 parser.add_argument("--step_number", type=int, help="number of training steps per epoch")
 parser.add_argument("--patience", type=int, help="patience for learning rate decrease during training")
 parser.add_argument("--learning_rate", type=float, help="initial learning rate for training")
+parser.add_argument("--min_learning_rate", type=float, help="minimal learning rate for training")
 args = parser.parse_args()
 
 # get parameters
@@ -31,15 +32,16 @@ print(f"files in config_dir={args.config_dir}: {os.listdir(args.config_dir)}")
 config = open_config_file(args.config_dir, args.test_data_augmentation)
 t_p = config["training_parameters"]
 model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
-load_model_name = t_p["load_model_name"] + (f"_{args.load_model_idx}" if args.load_model_idx is not None else "") if "load_model_name" in t_p else None
+load_model_name = t_p["load_model_name"] + (f"_{args.load_model_idx}" if args.load_model_idx is not None else "") if len(t_p.get("load_model_name", "")) > 0 else None
 WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
-LOAD_WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  load_model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  load_model_name + ".h5") if load_model_name is not None else None
+LOAD_WEIGHT_PATH = ( os.path.join(args.config_dir, t_p["weight_dir"],  load_model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  load_model_name + ".h5") ) if load_model_name is not None else None
 LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], model_name ) if len(t_p["log_dir"])>0 else os.path.join(args.config_dir, model_name )
 SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
 N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
 STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
 PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
 LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
+MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
 WORKERS = t_p.get("multiprocessing_workers", 1)
 SHUFFLE = not args.test_data_augmentation
 print(f"configuration file found. ")
@@ -64,24 +66,14 @@ def init_iterator(step_number, **ds_kwargs):
     illumination_parameters = data_aug_params.get("illumination_parameters", None)
     if illumination_parameters is not None:
         illumination_generator = get_image_data_generator(illumination_parameters=illumination_parameters)
-        print(f"illm variation 2d: {illumination_generator.illumination_variation_2d}, n_points: {illumination_generator.illumination_variation_n_points}, intensity: {illumination_generator.illumination_variation_intensity}")
     else:
         illumination_generator = None
     
     batch_size = ds_kwargs["batch_size"]
-    input_shape = ds_kwargs.get("input_shape", (512, 512))
-    ensure_multiplicity(2, input_shape)
     tiling_parameters = ds_kwargs.get("tiling_parameters", None)
-    if tiling_parameters is not None:
-        tiling_parameters["tile_shape"] = input_shape
-        n_tiles = tiling_parameters.get("n_tiles", -1)
-        if n_tiles <= 0:
-            batch_size, n_tiles = get_optimal_tiling(dataset, channel_names[0], batch_size, input_shape,  tiling_parameters.pop("tile_overlap_fraction", 1. / 4))
-        tiling_parameters["n_tiles"] = n_tiles
-        
     return get_iterator(dataset, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
         input_channel_keywords=channel_names, class_keyword=classes_name,
-        train_group_keyword=ds_kwargs.get("group_keyword", None),
+        train_group_keyword=ds_kwargs.get("keyword", None),
         tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number, dtype="float32", shuffle=SHUFFLE,
         elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
         ), weights
@@ -104,7 +96,7 @@ if args.export_only:
     tf.saved_model.save(model, SAVED_MODEL_PATH)
 else:
     print(f"init iterator...", flush=True)
-    train_it, weight_list = concatenate_iterators(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
+    train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
     test_it = None
     if len(weight_list) > 1:
         # weighted sum of weights
@@ -159,7 +151,7 @@ else:
         if test_it is not None:
             test_it._close_datasetIO()
         checkpoint = tf.keras.callbacks.ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
-        lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=5e-7, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
+        lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
         tensorboard_callback = tf.keras.callbacks.TensorBoard(LOG_PATH, histogram_freq=1)
         ton_cb = tf.keras.callbacks.TerminateOnNaN()
         print("start training...", flush=True)

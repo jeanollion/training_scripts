@@ -1,6 +1,7 @@
 import json, os
 from dataset_iterator import ConcatIterator
-from dataset_iterator.utils import transpose_list
+from dataset_iterator.utils import transpose_list, is_null, ensure_multiplicity, is_list
+from dataset_iterator.helpers import get_optimal_tiling
 
 def merge_dicts(primary_dict, secondary_dict):
     result = {**secondary_dict, **primary_dict}
@@ -17,7 +18,7 @@ def open_config_file(config_dir:str, test:bool):
     with open(config_path) as config_file:
         confg_s = config_file.read()
         config = json.loads(confg_s)
-        config = convert_bool(config)
+        config = convert_bool(config) # boolean are represented as string
     # ensure path are absolute and existing
     weight_path = config["training_parameters"].get("weight_dir", "")
     if len(weight_path) == 0:
@@ -35,7 +36,21 @@ def open_config_file(config_dir:str, test:bool):
     config["training_parameters"]["log_dir"] = log_path
     if not os.path.exists(log_path):
         os.mkdir(log_path)
-
+    if test:
+        test_param = config.get("test_data_augmentation_parameters", {})
+        if "batch_size" in test_param:
+            config["dataset_parameters"]["batch_size"] = test_param["batch_size"]
+        if "concat_batch_size" in test_param:
+            config["dataset_parameters"]["concat_batch_size"] = test_param["concat_batch_size"]
+        if "input_shape" in test_param:
+            config["dataset_parameters"]["input_shape"] = test_param["input_shape"]
+        if test_param.get("constant_view", True):
+            for ds_params in config["dataset_list"]:
+                if "tiling_parameters" in ds_params: # replace random tiling by constant tiling
+                    tiling_parameters = ds_params["tiling_parameters"]
+                    if not is_null(tiling_parameters.get("random_channel_jitter_shape", None), 0) or tiling_parameters.get("perform_augmentation", False) or tiling_parameters.get("random_stride", False) or not is_null(tiling_parameters.get("zoom_range", 1)):
+                        tiling_parameters = {"n_tiles": 1, "perform_augmentation": False, "random_stride": False, "zoom_range": [1, 1], "random_channel_jitter_shape": [0, 0]}
+                        ds_params["tiling_parameters"] = tiling_parameters
     # copy global dataset parameters to individual datasets
     for i in range(len(config["dataset_list"])):
         config["dataset_list"][i] = merge_dicts(config["dataset_list"][i], config["dataset_parameters"])
@@ -43,7 +58,8 @@ def open_config_file(config_dir:str, test:bool):
         if not os.path.isabs(ds["path"]):
             ds["path"] = os.path.join(config_dir, ds["path"])
         assert os.path.exists(ds["path"]), f"dataset {ds['path']} not found"
-
+        if "keyword" in ds and len(ds["keyword"]) == 0:
+            del ds["keyword"]
     return config
 
 def convert_bool(obj):
@@ -61,13 +77,34 @@ def convert_bool(obj):
         return {convert_bool(key):convert_bool(value) for key, value in obj.items()}
     return obj
 
-def concatenate_iterators(config, init_iterator, **kwargs):
+def get_iterator(config, init_iterator, **kwargs):
     step_number = kwargs.pop("step_number", config["training_parameters"]["step_number"])
+    input_shape = config["dataset_parameters"].get("input_shape", (512, 512))
+    ensure_multiplicity(2, input_shape)
+    concat = len(config["dataset_list"])>1
+    for i, ds_conf in enumerate(config["dataset_list"]):
+        batch_size = config["dataset_parameters"]["batch_size"]
+        tiling_parameters = ds_conf.get("tiling_parameters", None)
+        if tiling_parameters is not None:
+            tiling_parameters["tile_shape"] = input_shape
+            n_tiles = tiling_parameters.get("n_tiles", -1)
+            if n_tiles <= 0:
+                dataset = ds_conf["path"]
+                channel_name = ds_conf.get("channel_name", "raw")
+                if is_list(channel_name):
+                    channel_name = channel_name[0]
+                batch_size, n_tiles = get_optimal_tiling(dataset, channel_name, batch_size, input_shape, group_keyword=ds_conf.get("keyword", None), tile_overlap_fraction=tiling_parameters.pop("tile_overlap_fraction", 1. / 4))
+                tiling_parameters["n_tiles"] = n_tiles
+                ds_conf["batch_size"] = batch_size
+            else: # adjust batch size to match target batch size
+                assert batch_size % n_tiles == 0, f"Error at dataset {i} : batch_size = {batch_size} is not divisible by n_tiles = {n_tiles}"
+                ds_conf["batch_size"] = batch_size//n_tiles
+            print(f"dataset {i}: n_tiles={n_tiles} batch_size={batch_size}", flush=True)
     iterator_list, concat_proportion = [], []
-    for conf in config["dataset_list"]:
-        it = init_iterator(step_number=step_number if len(config["dataset_list"]) == 1 else 0, **conf)
+    for ds_conf in config["dataset_list"]:
+        it = init_iterator(step_number=0 if concat else step_number, **ds_conf)
         iterator_list.append(it)
-        concat_proportion.append(conf.get("concat_proportion", 1))
+        concat_proportion.append(ds_conf.get("concat_proportion", 1))
     if isinstance(iterator_list[0], (list, tuple)): # init function return several outputs
         iterator_list = transpose_list(iterator_list)
         all_outputs = iterator_list
