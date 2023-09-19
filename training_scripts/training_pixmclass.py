@@ -84,6 +84,7 @@ def init_model(n_classes):
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
         model.load_weights(WEIGHT_PATH)
     elif LOAD_WEIGHT_PATH is not None:
+        assert os.path.exists(LOAD_WEIGHT_PATH), f"weights {LOAD_WEIGHT_PATH} not found"
         model.load_weights(LOAD_WEIGHT_PATH)
     return model
 

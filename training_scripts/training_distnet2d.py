@@ -4,8 +4,8 @@ import random
 import numpy as np
 import tensorflow as tf
 import h5py
+from dataset_iterator import ConcatIterator
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
-from dataset_iterator.helpers import get_optimal_tiling
 from dataset_iterator import extract_tile_random_zoom_function
 from dataset_iterator.utils import ensure_multiplicity, transpose_list
 from distnet_2d.data import DyDxIterator
@@ -76,7 +76,7 @@ def init_iterator(step_number, **ds_kwargs):
                            frame_window=arch_params.get("frame_window", 3),
                            image_data_generators=[data_generator, mask_generator],
                            elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
-                           channels_postprocessing_function=pp_fun)
+                           channels_postprocessing_function=pp_fun, verbose=False and args.test_data_augmentation)
     return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_kwargs.get("keyword", None),
                         batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun,
                         aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=SHUFFLE,
@@ -94,6 +94,7 @@ def init_model():
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
         model.load_weights(WEIGHT_PATH)
     elif LOAD_WEIGHT_PATH is not None:
+        assert os.path.exists(LOAD_WEIGHT_PATH), f"weights {LOAD_WEIGHT_PATH} not found"
         model.load_weights(LOAD_WEIGHT_PATH)
     return model
 
@@ -101,7 +102,7 @@ if args.export_only:
     print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
     model = init_model()
     # export model
-    tf.saved_model.save(model, SAVED_MODEL_PATH)
+    model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
 else:
     print(f"init iterator...", flush=True)
     test_param = config.get("test_data_augmentation_parameters", {})
@@ -123,6 +124,11 @@ else:
         print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
         for i in range(n_iterations):
             input, output = train_it[idx]
+            #idx_a = np.copy(train_it.index_array)
+            #print(f"index array: {idx_a}")
+            #if isinstance(train_it, ConcatIterator):
+            #    index_it = train_it._get_it_idx(idx_a)
+            #    print(f"it {index_it[idx]} shuffle: {train_it.iterators[index_it[idx]].shuffle} index array: {train_it.iterators[index_it[idx]].index_array}")
             inputs.append(input)
             if not input_only:
                 outputs.append(output)
@@ -133,7 +139,7 @@ else:
         if not input_only:
             outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
             outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
-            output_name = ["EDM", "GCDM", "dY", "dY", "Category"]
+            output_name = ["EDM", "GCDM", "dY", "dX", "Category"]
         print(f"writing {len(outputs)+1} x {input.shape} to file: {file_path}", flush=True)
         with h5py.File(file_path, mode='w') as h5pyFile :
             h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input", data=input)
@@ -155,7 +161,8 @@ else:
         callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
         if tensorboard_callback is not None:
             callbacks.append(tensorboard_callback)
-        print("start training... ", flush=True)
-        model.fit(train_it, epochs=N_EPOCHS, validation_data=test_it, callbacks=callbacks, workers=WORKERS, use_multiprocessing=True)
+        if N_EPOCHS>0:
+            print("start training... ", flush=True)
+            model.fit(train_it, epochs=N_EPOCHS, validation_data=test_it, callbacks=callbacks, workers=WORKERS, use_multiprocessing=True)
         # export model
-        tf.saved_model.save(model, SAVED_MODEL_PATH)
+        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
