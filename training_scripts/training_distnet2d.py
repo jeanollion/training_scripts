@@ -169,7 +169,7 @@ else:
             else:
                 gen = train_it
             print("start training... ", flush=True)
-            model.fit(gen, epochs=N_EPOCHS, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
+            model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
             if WORKERS > 1:
                 enq.stop()
         # export model
