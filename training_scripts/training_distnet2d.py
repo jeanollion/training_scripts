@@ -161,8 +161,16 @@ else:
         callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
         if tensorboard_callback is not None:
             callbacks.append(tensorboard_callback)
-        if N_EPOCHS>0:
+        if N_EPOCHS > 0:
+            if WORKERS > 1:
+                enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
+                enq.start(workers=WORKERS, max_queue_size=2 * WORKERS)
+                gen = enq.get()
+            else:
+                gen = train_it
             print("start training... ", flush=True)
-            model.fit(train_it, epochs=N_EPOCHS, validation_data=test_it, callbacks=callbacks, workers=WORKERS, use_multiprocessing=True)
+            model.fit(gen, epochs=N_EPOCHS, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
+            if WORKERS > 1:
+                enq.stop()
         # export model
         model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)

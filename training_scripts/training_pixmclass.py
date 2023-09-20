@@ -5,11 +5,10 @@ import numpy as np
 import tensorflow as tf
 import h5py
 from dataset_iterator.image_data_generator import get_image_data_generator
-from pix_mclass.training import get_iterator
 from pix_mclass.utils import ensure_multiplicity
-from dataset_iterator.helpers import get_optimal_tiling
 from pix_mclass import get_unet
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
+import pix_mclass.training as pmt
 from training_core import open_config_file, get_iterator
 
 parser = argparse.ArgumentParser()
@@ -45,6 +44,7 @@ MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.g
 WORKERS = t_p.get("multiprocessing_workers", 1)
 SHUFFLE = not args.test_data_augmentation
 print(f"configuration file found. ")
+
 def init_iterator(step_number, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_names = ds_kwargs.get("channel_name", "raw")
@@ -71,7 +71,7 @@ def init_iterator(step_number, **ds_kwargs):
     
     batch_size = ds_kwargs["batch_size"]
     tiling_parameters = ds_kwargs.get("tiling_parameters", None)
-    return get_iterator(dataset, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
+    return pmt.get_iterator(dataset, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
         input_channel_keywords=channel_names, class_keyword=classes_name,
         train_group_keyword=ds_kwargs.get("keyword", None),
         tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number, dtype="float32", shuffle=SHUFFLE,
@@ -156,7 +156,16 @@ else:
         tensorboard_callback = tf.keras.callbacks.TensorBoard(LOG_PATH, histogram_freq=1)
         ton_cb = tf.keras.callbacks.TerminateOnNaN()
         print("start training...", flush=True)
-        model.fit(train_it, epochs=N_EPOCHS, validation_data=test_it, callbacks=[lr_schedule, checkpoint, tensorboard_callback, ton_cb], workers=WORKERS, use_multiprocessing=True)
+
+        if WORKERS > 1:
+            enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
+            enq.start(workers=WORKERS, max_queue_size=2*WORKERS)
+            gen = enq.get()
+        else:
+            gen = train_it
+        model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=[lr_schedule, checkpoint, tensorboard_callback, ton_cb], workers=1, use_multiprocessing=False)
+        if WORKERS > 1:
+            enq.stop()
         # export model
         tf.saved_model.save(model, SAVED_MODEL_PATH)
 

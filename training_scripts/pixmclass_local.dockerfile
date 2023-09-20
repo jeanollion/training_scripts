@@ -3,4 +3,5 @@ RUN pip install git+https://github.com/jeanollion/dataset_iterator.git
 RUN pip install git+https://github.com/jeanollion/pix_mclass.git
 COPY training_core.py /training_core.py
 COPY training_pixmclass.py /train.py
+ENV HDF5_USE_FILE_LOCKING=FALSE
 ENTRYPOINT ["/bin/bash"]
