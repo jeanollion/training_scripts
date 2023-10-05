@@ -41,7 +41,7 @@ STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("ste
 PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
 LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
 MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
-WORKERS = t_p.get("multiprocessing_workers", 1)
+WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
 SHUFFLE = not args.test_data_augmentation
 print(f"configuration file found. ")
 
@@ -160,7 +160,7 @@ else:
 
         if WORKERS > 1:
             enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-            enq.start(workers=WORKERS, max_queue_size=2*WORKERS)
+            enq.start(workers=WORKERS, max_queue_size=max(3, WORKERS))
             gen = enq.get()
         else:
             gen = train_it
