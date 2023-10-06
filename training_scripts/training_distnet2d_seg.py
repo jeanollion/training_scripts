@@ -55,6 +55,7 @@ SHUFFLE = not args.test_data_augmentation
 print(f"configuration file found. ")
 def init_iterator(step_number, **ds_kwargs):
     timelapse = config["model_architecture"].get("timelapse", False)
+    channel_number = config["model_architecture"].get("channel_number", 1)
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_name = ds_kwargs.get("channel_name", "raw")
     dataset = ds_kwargs["path"]
@@ -87,8 +88,8 @@ def init_iterator(step_number, **ds_kwargs):
                 m[int(round(center[0])), int(round(center[1]))] = 0
                 count += 1
         if count > 0:
-            m = ma.masked_array(m, ~label.astype(np.bool))
-            return skfmm.distance(m)
+            m = ma.masked_array(m, ~label.astype(bool))
+            return skfmm.distance(m).astype(np.float32)
         else:
             return np.zeros_like(label)
     def apply_batchwise(fun):
@@ -117,7 +118,9 @@ def init_iterator(step_number, **ds_kwargs):
         return TrackingIterator(
             channels_prev=[True, False],
             channels_next=[True, False],
-            aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1),
+            n_frames=(channel_number-1)//2,
+            frame_subsampling=data_aug_params.get("frame_subsampling", 1),
+            aug_all_frames=True,
             **iterator_params)
 
 def init_model():
@@ -126,6 +129,8 @@ def init_model():
     skip_connections = arch_args.pop("skip_connections", False)
     channel_number = arch_args.pop("channel_number", 1)
     timelapse = arch_args.pop("timelapse", False)
+    if arch_args.get("architecture_type", "blend").lower() == "enc_dec":
+        arch_args["architecture_type"] = "blend" # enc_dec is similar to distnet2d blend architecture, wihtout the blending part
     arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
     model = get_distnet_2d_seg(input_channels=channel_number, config=arch, skip_connections=skip_connections, shared_encoder=shared_encoder, accum_steps=1, l2_reg=0)
     if args.export_only:
@@ -154,7 +159,8 @@ else:
         test_param = config.get("test_data_augmentation_parameters", {})
         input_only = test_param.get("input_only", True)
         n_iterations = test_param.get("iteration_number", 10)
-        file_path = os.path.join("/data", "test_data_augmentation.h5")
+        root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
+        file_path = os.path.join(root_path, "test_data_augmentation.h5")
         idx = test_param.get("batch_index", -1)
         if idx < 0 or idx >= len(train_it):
             idx = random.randint(0, len(train_it))
