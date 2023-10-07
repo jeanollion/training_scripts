@@ -116,7 +116,9 @@ else:
         test_param = config.get("test_data_augmentation_parameters", {})
         input_only = test_param.get("input_only", True)
         n_iterations = test_param.get("iteration_number", 50)
-        file_path = os.path.join("/data", "test_data_augmentation.h5")
+        root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
+        file_path = os.path.join(root_path, "test_data_augmentation.h5")
+
         print(f"generating data augmented images : n_iterations: {n_iterations} output file: {file_path} ...", flush=True)
         idx = test_param.get("batch_index", -1)
         if idx < 0 or idx >= len(train_it):
@@ -141,6 +143,8 @@ else:
             h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input", data=input)
             if not input_only:
                 h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output", data=output)
+        if (os.path.exists("/dataTemp")):
+            print(f"dataTemp exists ! {os.listdir('/dataTemp')}", flush=True)
     else:
         # init model
         print("init model...", flush=True)
@@ -168,5 +172,5 @@ else:
         if WORKERS > 1:
             enq.stop()
         # export model
-        tf.saved_model.save(model, SAVED_MODEL_PATH)
+        tf.saved_model.save(model, SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
 

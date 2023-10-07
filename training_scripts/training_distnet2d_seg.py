@@ -213,4 +213,4 @@ else:
             if WORKERS > 1:
                 enq.stop()
         # export model
-        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+        tf.saved_model.save(model, SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
