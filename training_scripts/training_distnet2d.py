@@ -116,7 +116,8 @@ else:
         test_param = config.get("test_data_augmentation_parameters", {})
         input_only = test_param.get("input_only", True)
         n_iterations = test_param.get("iteration_number", 10)
-        file_path = os.path.join("/data", "test_data_augmentation.h5")
+        root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
+        file_path = os.path.join(root_path, "test_data_augmentation.h5")
         idx = test_param.get("batch_index", -1)
         if idx < 0 or idx >= len(train_it):
             idx = random.randint(0, len(train_it))
