@@ -166,7 +166,7 @@ else:
         if N_EPOCHS > 0:
             if WORKERS > 1:
                 enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                enq.start(workers=WORKERS, max_queue_size=max(3, WORKERS))
+                enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, int(WORKERS*1.5))))
                 gen = enq.get()
             else:
                 gen = train_it

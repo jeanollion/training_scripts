@@ -146,7 +146,7 @@ if args.export_only:
     print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
     model = init_model()
     # export model
-    model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+    tf.saved_model.save(model, SAVED_MODEL_PATH) # export ?
 else:
     print(f"init iterator...", flush=True)
     test_param = config.get("test_data_augmentation_parameters", {})
@@ -204,7 +204,7 @@ else:
         if N_EPOCHS > 0:
             if WORKERS > 1:
                 enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                enq.start(workers=WORKERS, max_queue_size=max(3, WORKERS))
+                enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, int(WORKERS*1.5))))
                 gen = enq.get()
             else:
                 gen = train_it
@@ -213,4 +213,4 @@ else:
             if WORKERS > 1:
                 enq.stop()
         # export model
-        tf.saved_model.save(model, SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
+        tf.saved_model.save(model, SAVED_MODEL_PATH)
