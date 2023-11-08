@@ -8,15 +8,15 @@ import h5py
 from math import isnan
 import skfmm
 import edt
-import itertools
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
 from dataset_iterator import extract_tile_random_zoom_function
-from dataset_iterator.utils import ensure_multiplicity, transpose_list
+from dataset_iterator.utils import transpose_list
 from dataset_iterator import MultiChannelIterator, TrackingIterator
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d_seg import get_distnet_2d_seg
 from distnet_2d.utils import StopOnLR
 from distnet_2d.data.medoid import get_medoid
+#from dataset_iterator.shared_mem_enqueuer import OrderedEnqueuerShm
 
 from training_core import open_config_file, get_iterator
 
@@ -50,7 +50,12 @@ PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 4
 LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
 MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
 WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
+USE_SHARED_MEM = t_p.get("use_shared_memory", False)
 SHUFFLE = not args.test_data_augmentation
+
+#h5py._errors.silence_errors()
+import warnings
+warnings.filterwarnings("ignore")
 
 print(f"configuration file found. ")
 def init_iterator(step_number, **ds_kwargs):
@@ -76,7 +81,11 @@ def init_iterator(step_number, **ds_kwargs):
         pp_fun = data_generator_to_channel_postprocessing_fun(illumination_gen, [0])
     else:
         pp_fun = None
-    edm_fun = lambda labels: edt.edt(labels, black_border=False)
+    #edm_fun = lambda labels: edt.edt(labels, black_border=False)
+    def edm_fun(labels):
+        edm = edt.edt(labels, black_border=False)
+        edm[labels==0] = -1
+        return edm
     def gcdm_fun(label):
         all_labels = np.unique(label)
         all_labels = [int(round(l)) for l in all_labels if l != 0]
@@ -153,9 +162,9 @@ else:
     if args.test_data_augmentation and "frame_subsampling" in test_param:
         for ds_params in config["dataset_list"]:
             ds_params["data_augmentation"]["frame_subsampling"] = test_param["frame_subsampling"]
-    train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
-    test_it = None
+
     if args.test_data_augmentation:
+        train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
         test_param = config.get("test_data_augmentation_parameters", {})
         input_only = test_param.get("input_only", True)
         n_iterations = test_param.get("iteration_number", 10)
@@ -192,9 +201,7 @@ else:
         model = init_model()
         model.compile(optimizer=tf.keras.optimizers.Adam(LR))
         # perform training
-        train_it._close_datasetIO()
-        if test_it is not None:
-            test_it._close_datasetIO()
+        test_it = None
         checkpoint = tf.keras.callbacks.ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
         lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
         tensorboard_callback = tf.keras.callbacks.TensorBoard(LOG_PATH)
@@ -203,11 +210,15 @@ else:
             callbacks.append(tensorboard_callback)
         if N_EPOCHS > 0:
             if WORKERS > 1:
-                enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
+                init_it_fun = lambda: get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=True)
+                #if USE_SHARED_MEM:
+                #    enq = OrderedEnqueuerShm(init_it_fun(), use_multiprocessing=True, shuffle=True, use_shm=True, continuous=True)
+                #else:
+                enq = tf.keras.utils.OrderedEnqueuer(init_it_fun(), use_multiprocessing=True, shuffle=True)
                 enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, int(WORKERS*1.5))))
                 gen = enq.get()
             else:
-                gen = train_it
+                gen = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
             print("start training... ", flush=True)
             model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
             if WORKERS > 1:

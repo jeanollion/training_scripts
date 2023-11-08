@@ -120,3 +120,14 @@ def get_iterator(config, init_iterator, **kwargs):
     else:
         all_outputs[0] = it
         return all_outputs
+
+def chain_pp_fun(pp_fun_list):
+    if len(pp_fun_list)==0:
+        return None
+    elif len(pp_fun_list)==1:
+        return pp_fun_list[0]
+    else:
+        def fun(batch_by_channel):
+            for f in pp_fun_list:
+                f(batch_by_channel)
+        return fun

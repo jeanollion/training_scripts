@@ -4,15 +4,15 @@ import random
 import numpy as np
 import tensorflow as tf
 import h5py
-from dataset_iterator import ConcatIterator
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
 from dataset_iterator import extract_tile_random_zoom_function
-from dataset_iterator.utils import ensure_multiplicity, transpose_list
+from dataset_iterator.utils import transpose_list
 from distnet_2d.data import DyDxIterator
+from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils import StopOnLR
-from training_core import open_config_file, get_iterator
+from training_core import open_config_file, get_iterator, chain_pp_fun
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -63,12 +63,16 @@ def init_iterator(step_number, **ds_kwargs):
     scaling_parameters["channel_name"] = channel_name
     data_generator = get_image_data_generator(scaling_parameters=scaling_parameters)
     mask_generator = get_image_data_generator()
+    swim1D_params = data_aug_params.get("swim1d_parameters", None)
+    pp_fun_list = []
+    if swim1D_params is not None:
+        pp_fun_list.append(get_swim1d_function(1, swim1D_params.get("distance", 50), swim1D_params.get("min_gap", 3), swim1D_params.get("closed_end", True)))
     illumination_parameters = data_aug_params.get("illumination_parameters", None)
     if illumination_parameters is not None:
         illumination_gen = get_image_data_generator(illumination_parameters=illumination_parameters)
-        pp_fun = data_generator_to_channel_postprocessing_fun(illumination_gen, [0])
-    else:
-        pp_fun = None
+        pp_fun_list.append(data_generator_to_channel_postprocessing_fun(illumination_gen, [0]))
+
+    pp_fun = chain_pp_fun(pp_fun_list)
     iterator_params = dict(erase_edge_cell_size=data_aug_params.get("erase_edge_cell_size", 0),
                            aug_remove_prob=data_aug_params.get("static_probability", 0.01),
                            next=arch_params.get("next", True),
