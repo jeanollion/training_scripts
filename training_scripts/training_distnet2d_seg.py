@@ -73,8 +73,10 @@ def init_iterator(step_number, **ds_kwargs):
     scaling_parameters = data_aug_params.get("scaling_parameters", {})
     scaling_parameters["dataset"] = dataset
     scaling_parameters["channel_name"] = channel_name
-    data_generator = get_image_data_generator(scaling_parameters=scaling_parameters)
-    mask_generator = get_image_data_generator()
+    affine_transform_parameters = data_aug_params.get("affine_transform_parameters", None)
+    data_generator = get_image_data_generator(scaling_parameters=scaling_parameters, affine_transform_parameters=affine_transform_parameters)
+    affine_transform_parameters_mask = None if affine_transform_parameters is None else {**affine_transform_parameters, "interpolation_order": 0}
+    mask_generator = get_image_data_generator(scaling_parameters=[], affine_transform_parameters=affine_transform_parameters_mask)
     illumination_parameters = data_aug_params.get("illumination_parameters", None)
     if illumination_parameters is not None:
         illumination_gen = get_image_data_generator(illumination_parameters=illumination_parameters)

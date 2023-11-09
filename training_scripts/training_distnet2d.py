@@ -61,14 +61,16 @@ def init_iterator(step_number, **ds_kwargs):
     scaling_parameters = data_aug_params.get("scaling_parameters", {})
     scaling_parameters["dataset"] = dataset
     scaling_parameters["channel_name"] = channel_name
-    data_generator = get_image_data_generator(scaling_parameters=scaling_parameters)
-    mask_generator = get_image_data_generator()
-    swim1D_params = data_aug_params.get("swim1d_parameters", None)
+    affine_transform_parameters = data_aug_params.get("affine_transform_parameters", None)
+    data_generator = get_image_data_generator(scaling_parameters=scaling_parameters, affine_transform_parameters=affine_transform_parameters)
+    affine_transform_parameters_mask = None if affine_transform_parameters is None else {**affine_transform_parameters, "interpolation_order": 0}
+    mask_generator = get_image_data_generator(scaling_parameters=[], affine_transform_parameters=affine_transform_parameters_mask)
     pp_fun_list = []
+    swim1D_params = data_aug_params.get("swim1d_parameters", None)
     if swim1D_params is not None:
         pp_fun_list.append(get_swim1d_function(1, swim1D_params.get("distance", 50), swim1D_params.get("min_gap", 3), swim1D_params.get("closed_end", True)))
     illumination_parameters = data_aug_params.get("illumination_parameters", None)
-    if illumination_parameters is not None:
+    if illumination_parameters is not None: # perform illumination at the end: after elastic deform and swim
         illumination_gen = get_image_data_generator(illumination_parameters=illumination_parameters)
         pp_fun_list.append(data_generator_to_channel_postprocessing_fun(illumination_gen, [0]))
 
