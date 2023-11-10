@@ -110,6 +110,7 @@ if args.export_only:
     model = init_model()
     # export model
     model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+    print("model saved", flush=True)
 else:
     print(f"init iterator...", flush=True)
     test_param = config.get("test_data_augmentation_parameters", {})
@@ -180,5 +181,7 @@ else:
             model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
             if WORKERS > 1:
                 enq.stop()
+            print("training successful", flush=True)
         # export model
         model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+        print("model saved", flush=True)

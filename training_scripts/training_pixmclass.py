@@ -96,6 +96,7 @@ if args.export_only:
     model.load_weights(WEIGHT_PATH)
     # export model
     tf.saved_model.save(model, SAVED_MODEL_PATH)
+    print("model saved", flush=True)
 else:
     print(f"init iterator...", flush=True)
     train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
@@ -161,16 +162,17 @@ else:
         tensorboard_callback = tf.keras.callbacks.TensorBoard(LOG_PATH, histogram_freq=1)
         ton_cb = tf.keras.callbacks.TerminateOnNaN()
         print("start training...", flush=True)
-
-        if WORKERS > 1:
-            enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-            enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, int(WORKERS*1.5))))
-            gen = enq.get()
-        else:
-            gen = train_it
-        model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=[lr_schedule, checkpoint, tensorboard_callback, ton_cb], workers=1, use_multiprocessing=False)
-        if WORKERS > 1:
-            enq.stop()
+        if N_EPOCHS > 0:
+            if WORKERS > 1:
+                enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
+                enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, int(WORKERS*1.5))))
+                gen = enq.get()
+            else:
+                gen = train_it
+            model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=[lr_schedule, checkpoint, tensorboard_callback, ton_cb], workers=1, use_multiprocessing=False)
+            if WORKERS > 1:
+                enq.stop()
+            print("training successful", flush=True)
         # export model
         tf.saved_model.save(model, SAVED_MODEL_PATH)
-
+        print("model saved", flush=True)
