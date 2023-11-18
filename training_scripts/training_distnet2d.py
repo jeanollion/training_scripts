@@ -106,7 +106,7 @@ def init_model():
     return model
 
 if args.export_only:
-    print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
+    print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})", flush=True)
     model = init_model()
     # export model
     model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
