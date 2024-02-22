@@ -79,6 +79,7 @@ def convert_bool(obj):
 
 def get_iterator(config, init_iterator, **kwargs):
     step_number = kwargs.pop("step_number", config["training_parameters"]["step_number"])
+    shuffle = kwargs.pop("shuffle", True)
     input_shape = config["dataset_parameters"].get("input_shape", (512, 512))
     ensure_multiplicity(2, input_shape)
     concat = len(config["dataset_list"])>1
@@ -102,7 +103,7 @@ def get_iterator(config, init_iterator, **kwargs):
             print(f"dataset {i}: n_tiles={n_tiles} batch_size={batch_size}", flush=True)
     iterator_list, concat_proportion = [], []
     for ds_conf in config["dataset_list"]:
-        it = init_iterator(step_number=0 if concat else step_number, **ds_conf)
+        it = init_iterator(step_number=0 if concat else step_number, shuffle=shuffle, **ds_conf)
         iterator_list.append(it)
         concat_proportion.append(ds_conf.get("concat_proportion", 1))
     if isinstance(iterator_list[0], (list, tuple)): # init function return several outputs

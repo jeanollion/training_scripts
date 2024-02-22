@@ -45,7 +45,7 @@ WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
 SHUFFLE = not args.test_data_augmentation
 print(f"configuration file found. ")
 
-def init_iterator(step_number, **ds_kwargs):
+def init_iterator(step_number, shuffle, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_names = ds_kwargs.get("channel_name", "raw")
     if not isinstance(channel_names, (list, tuple)):
@@ -74,7 +74,7 @@ def init_iterator(step_number, **ds_kwargs):
     return pmt.get_iterator(dataset, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
         input_channel_keywords=channel_names, class_keyword=classes_name,
         train_group_keyword=ds_kwargs.get("keyword", None),
-        tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number, dtype="float32", shuffle=SHUFFLE,
+        tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number, dtype="float32", shuffle=shuffle,
         elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
         ), weights
 

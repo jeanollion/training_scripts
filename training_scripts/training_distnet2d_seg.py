@@ -58,7 +58,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 print(f"configuration file found. ")
-def init_iterator(step_number, **ds_kwargs):
+def init_iterator(step_number, shuffle, **ds_kwargs):
     timelapse = config["model_architecture"].get("timelapse", False)
     channel_number = config["model_architecture"].get("channel_number", 1)
     data_aug_params = ds_kwargs.get("data_augmentation", {})
@@ -115,7 +115,7 @@ def init_iterator(step_number, **ds_kwargs):
                            output_channels=[1, 1],
                            mask_channels=[1],
                            batch_size=batch_size, step_number=step_number,
-                           extract_tile_function=extract_tiles_fun, shuffle=SHUFFLE,
+                           extract_tile_function=extract_tiles_fun, shuffle=shuffle,
                            image_data_generators=[data_generator, mask_generator],
                            elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                            channels_postprocessing_function=pp_fun,

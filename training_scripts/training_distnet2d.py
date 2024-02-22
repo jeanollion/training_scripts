@@ -47,7 +47,7 @@ WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
 SHUFFLE = not args.test_data_augmentation
 
 print(f"configuration file found. ")
-def init_iterator(step_number, **ds_kwargs):
+def init_iterator(step_number, shuffle, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     arch_params = config["model_architecture"]
     channel_name = ds_kwargs.get("channel_name", "raw")
@@ -85,7 +85,7 @@ def init_iterator(step_number, **ds_kwargs):
                            channels_postprocessing_function=pp_fun, verbose=False and args.test_data_augmentation)
     return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_kwargs.get("keyword", None),
                         batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun,
-                        aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=SHUFFLE,
+                        aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=shuffle,
                         **iterator_params)
 
 def init_model():
