@@ -11,7 +11,7 @@ from distnet_2d.data import DyDxIterator
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
-from distnet_2d.utils import StopOnLR
+from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback
 from training_core import open_config_file, get_iterator, chain_pp_fun
 
 parser = argparse.ArgumentParser()
@@ -43,10 +43,13 @@ STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("ste
 PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
 LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
 MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
+EPSILON_RANGE = t_p.get("epsilon_range", [0.1, 1e-7])
+EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
 WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
 SHUFFLE = not args.test_data_augmentation
-
+START_EPOCH = t_p.get("epoch_start", 0)
 print(f"configuration file found. ")
+
 def init_iterator(step_number, shuffle, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     arch_params = config["model_architecture"]
@@ -159,7 +162,7 @@ else:
         # init model
         print("init model...")
         model = init_model()
-        model.compile(optimizer=tf.keras.optimizers.Adam(LR))
+        model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
         # perform training
         train_it._close_datasetIO()
         if test_it is not None:
@@ -170,6 +173,9 @@ else:
         callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
         if tensorboard_callback is not None:
             callbacks.append(tensorboard_callback)
+        if EPSILON_RANGE[1]!=EPSILON_RANGE[0]:
+            eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
+            callbacks.append(eps_schedule)
         if N_EPOCHS > 0:
             if WORKERS > 1:
                 enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)

@@ -1,4 +1,4 @@
-FROM jeanollion/training_dnn:tf-2.7.1
+FROM jeanollion/training_dnn:tf-2.14.0
 COPY dataset_iterator /dataset_iterator
 RUN pip install /dataset_iterator
 COPY distnet2d /distnet2d
