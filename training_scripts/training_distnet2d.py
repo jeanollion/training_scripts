@@ -11,7 +11,7 @@ from distnet_2d.data import DyDxIterator
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
-from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback
+from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback
 from training_core import open_config_file, get_iterator, chain_pp_fun
 
 parser = argparse.ArgumentParser()
@@ -169,10 +169,12 @@ else:
             test_it._close_datasetIO()
         checkpoint = tf.keras.callbacks.ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
         lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
-        tensorboard_callback = tf.keras.callbacks.TensorBoard(LOG_PATH)
+        tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
         callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
         if tensorboard_callback is not None:
             callbacks.append(tensorboard_callback)
+        log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
+        callbacks.append(log_cb)
         if EPSILON_RANGE[1]!=EPSILON_RANGE[0]:
             eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
             callbacks.append(eps_schedule)

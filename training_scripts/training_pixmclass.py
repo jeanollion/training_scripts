@@ -6,7 +6,7 @@ import tensorflow as tf
 import h5py
 from dataset_iterator.image_data_generator import get_image_data_generator
 from pix_mclass.utils import ensure_multiplicity
-from pix_mclass import get_unet
+from pix_mclass import get_unet, LogsCallback, EpsilonCosineDecayCallback
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
 import pix_mclass.training as pmt
 from training_core import open_config_file, get_iterator
@@ -41,8 +41,11 @@ STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("ste
 PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
 LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
 MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
+EPSILON_RANGE = t_p.get("epsilon_range", [0.1, 1e-7])
+EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
 WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
 SHUFFLE = not args.test_data_augmentation
+START_EPOCH = t_p.get("epoch_start", 0)
 print(f"configuration file found. ")
 
 def init_iterator(step_number, shuffle, **ds_kwargs):
@@ -151,7 +154,7 @@ else:
         print("init model...", flush=True)
         loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
         model = init_model(weights.shape[0])
-        model.compile(optimizer=tf.keras.optimizers.Adam(LR), loss=loss)
+        model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]), loss=loss)
 
         # perform training
         train_it._close_datasetIO()
@@ -159,8 +162,12 @@ else:
             test_it._close_datasetIO()
         checkpoint = tf.keras.callbacks.ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
         lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
-        tensorboard_callback = tf.keras.callbacks.TensorBoard(LOG_PATH, histogram_freq=1)
         ton_cb = tf.keras.callbacks.TerminateOnNaN()
+        log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
+        callbacks = [checkpoint, lr_schedule, log_cb, ton_cb]
+        if EPSILON_RANGE[1]!=EPSILON_RANGE[0]:
+            eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
+            callbacks.append(eps_schedule)
         print("start training...", flush=True)
         if N_EPOCHS > 0:
             if WORKERS > 1:
@@ -169,7 +176,7 @@ else:
                 gen = enq.get()
             else:
                 gen = train_it
-            model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=[lr_schedule, checkpoint, tensorboard_callback, ton_cb], workers=1, use_multiprocessing=False)
+            model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
             if WORKERS > 1:
                 enq.stop()
             print("training successful", flush=True)

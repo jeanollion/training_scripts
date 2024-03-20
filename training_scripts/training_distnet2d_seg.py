@@ -14,7 +14,7 @@ from dataset_iterator.utils import transpose_list
 from dataset_iterator import MultiChannelIterator, TrackingIterator
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d_seg import get_distnet_2d_seg
-from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback
+from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback
 from distnet_2d.data.medoid import get_medoid
 #from dataset_iterator.shared_mem_enqueuer import OrderedEnqueuerShm
 
@@ -54,7 +54,7 @@ EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
 WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
 USE_SHARED_MEM = t_p.get("use_shared_memory", False)
 SHUFFLE = not args.test_data_augmentation
-
+START_EPOCH = t_p.get("epoch_start", 0)
 
 #h5py._errors.silence_errors()
 import warnings
@@ -210,10 +210,12 @@ else:
         test_it = None
         checkpoint = tf.keras.callbacks.ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
         lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
-        tensorboard_callback = tf.keras.callbacks.TensorBoard(LOG_PATH)
+        tensorboard_callback = None # tf.keras.callbacks.TensorBoard(LOG_PATH)
         callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
         if tensorboard_callback is not None:
             callbacks.append(tensorboard_callback)
+        log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
+        callbacks.append(log_cb)
         if EPSILON_RANGE[1]!=EPSILON_RANGE[0]:
             eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
             callbacks.append(eps_schedule)
