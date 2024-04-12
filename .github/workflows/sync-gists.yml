@@ -16,4 +16,4 @@ jobs:
           gist_url: https://gist.github.com/jeanollion/29ce794dfb68e51f643a358bb1b40cea
           gist_title: training_core.py
           gist_description: Core script for DL training
-          github_file: training_scripts/training_core.py
+          github_file: training_core.py
