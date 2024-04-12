@@ -4,7 +4,7 @@ on: [push]
 
 jobs:
   gist-sync:
-    name: gist-sync-training_core
+    name: gist-sync
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -13,7 +13,7 @@ jobs:
         id: sync
         with:
           auth: ${{ secrets.GIST_TOKEN }}
-          gist_url: https://gist.github.com/jeanollion/4aea9bef9c4b98aa5f8084e1be5ed6ee
+          gist_url: https://gist.github.com/jeanollion/29ce794dfb68e51f643a358bb1b40cea
           gist_title: training_core.py
           gist_description: Core script for DL training
           github_file: training_scripts/training_core.py
