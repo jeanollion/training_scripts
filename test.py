@@ -35,8 +35,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
             sp["channel_name"] = channel_names[i]
     else:
         scaling_parameters = [{}] * len(channel_names)
-    scaling_data_generators = [get_image_data_generator(scaling_parameters=scaling_parameters[i]) for i in
-                               range(len(channel_names))]
+    scaling_data_generators = [get_image_data_generator(scaling_parameters=scaling_parameters[i]) for i in range(len(channel_names))]
 
     illumination_parameters = data_aug_params.get("illumination_parameters", None)
     if illumination_parameters is not None:
@@ -55,12 +54,13 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
                             elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
                             ), weights
 
-path = "/data/DL/MClassif/MaxTest"
+path = "/data/DL/MClassif/BugMax"
 config = open_config_file(path, True)
 print(config)
 ds = config["dataset_list"][0]
 
 it, weights = get_iterator(config, init_iterator, step_number=10, shuffle=False)
+print(f"weights: {weights}")
 tf_version = tuple(map(int, (tf.__version__.split("."))))
 print(f"tf version: {tf_version}, interp ? {tf_version<(2,9,0)}")
 

@@ -221,7 +221,7 @@ else:
             callbacks.append(eps_schedule)
         if N_EPOCHS > 0:
             if WORKERS > 1:
-                init_it_fun = lambda: get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=True)
+                init_it_fun = lambda: get_iterator(config, init_iterator, step_number=STEP_NUMBER if WORKERS==1 else 0, shuffle=True)
                 #if USE_SHARED_MEM:
                 #    enq = OrderedEnqueuerShm(init_it_fun(), use_multiprocessing=True, shuffle=True, use_shm=True, continuous=True)
                 #else:
@@ -229,7 +229,7 @@ else:
                 enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, int(WORKERS*1.5))))
                 gen = enq.get()
             else:
-                gen = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
+                gen = get_iterator(config, init_iterator, step_number=STEP_NUMBER if WORKERS==1 else 0, shuffle=SHUFFLE)
             print("start training... ", flush=True)
             model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
             if WORKERS > 1:

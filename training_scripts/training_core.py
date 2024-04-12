@@ -10,6 +10,13 @@ def merge_dicts(primary_dict, secondary_dict):
             result[k] = merge_dicts(primary_dict[k], secondary_dict[k])
     return result
 
+def set_to_iterator(iterator, function):
+    if isinstance(iterator, ConcatIterator):
+        for it in iterator.iterators:
+            set_to_iterator(it, function)
+    else:
+        function(iterator)
+
 def open_config_file(config_dir:str, test:bool):
     name = "test_configuration.json" if test else "training_configuration.json"
     config_path = os.path.join(config_dir, name)

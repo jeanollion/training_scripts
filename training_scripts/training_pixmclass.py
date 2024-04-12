@@ -55,7 +55,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
         channel_names = [channel_names]
     classes_name = ds_kwargs.get("classes_name", "classes")
     dataset = ds_kwargs["path"]
-    weights = get_class_weights(dataset, classes_name)
+    weights = get_class_weights(dataset, classes_name) # TODO limit class weights with user defined range
     scaling_parameters = data_aug_params.get("scaling_parameters", None)
     if scaling_parameters is not None:
         scaling_parameters = ensure_multiplicity(len(channel_names), scaling_parameters)
@@ -102,7 +102,7 @@ if args.export_only:
     print("model saved", flush=True)
 else:
     print(f"init iterator...", flush=True)
-    train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
+    train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER if WORKERS==1 else 0, shuffle=SHUFFLE)
     test_it = None
     if len(weight_list) > 1:
         # weighted sum of weights

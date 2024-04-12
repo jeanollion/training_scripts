@@ -9,7 +9,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - uses: popsiclestick/gist-sync-action@v1.2.0
+      - name: update training core
+        uses: popsiclestick/gist-sync-action@v1.2.0
         id: sync
         with:
           auth: ${{ secrets.GIST_TOKEN }}
@@ -17,3 +18,30 @@ jobs:
           gist_title: training_core.py
           gist_description: Core script for DL training
           github_file: training_scripts/training_core.py
+      - name: update training DiSTNet2D
+        uses: popsiclestick/gist-sync-action@v1.2.0
+        id: sync
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gist_url: https://gist.github.com/jeanollion/789b9dbbda92da548401c7250f1631ad
+          gist_title: training_distnet2d.py
+          gist_description: Training script for DiSTNet2D
+          github_file: training_scripts/training_distnet2d.py
+      - name: update training DiSTNet2D seg
+        uses: popsiclestick/gist-sync-action@v1.2.0
+        id: sync
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gist_url: https://gist.github.com/jeanollion/8035170d925598817be05dafbea05e89
+          gist_title: training_distnet2d_seg.py
+          gist_description: Training script for segmentation part of DiSTNet2D
+          github_file: training_scripts/training_distnet2d_seg.py
+      - name: update training pixmclass
+        uses: popsiclestick/gist-sync-action@v1.2.0
+        id: sync
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gist_url: https://gist.github.com/jeanollion/60ad55e49a69dbf08e337ce97b030ce5
+          gist_title: training_pixmclass.py
+          gist_description: Core script for DL training
+          github_file: training_scripts/training_pixmclass.py
