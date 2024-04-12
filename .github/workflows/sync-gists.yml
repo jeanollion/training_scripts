@@ -1,6 +1,6 @@
 name: Sync gists
 
-on: [push]
+on: push
 
 jobs:
   gist-sync:
