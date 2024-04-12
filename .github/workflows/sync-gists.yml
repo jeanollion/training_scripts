@@ -14,6 +14,6 @@ jobs:
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gist_url: https://gist.github.com/jeanollion/4aea9bef9c4b98aa5f8084e1be5ed6ee
-          gist_title: Training Core
+          gist_title: training_core.py
           gist_description: Core script for DL training
           github_file: training_scripts/training_core.py
