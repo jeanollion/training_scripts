@@ -1,0 +1,19 @@
+name: Sync gists
+
+on: [push]
+
+jobs:
+  gist-sync:
+    name: gist-sync-training_core
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+      - uses: popsiclestick/gist-sync-action@v1.2.0
+        id: sync
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gist_url: https://gist.github.com/jeanollion/4aea9bef9c4b98aa5f8084e1be5ed6ee
+          gist_title: training_core.py
+          gist_description: Core script for DL training
+          github_file: training_scripts/training_core.py
