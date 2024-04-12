@@ -11,7 +11,7 @@ jobs:
         uses: actions/checkout@v4
       - name: update training core
         uses: popsiclestick/gist-sync-action@v1.2.0
-        id: sync
+        id: sync-training-core
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gist_url: https://gist.github.com/jeanollion/4aea9bef9c4b98aa5f8084e1be5ed6ee
@@ -20,7 +20,7 @@ jobs:
           github_file: training_scripts/training_core.py
       - name: update training DiSTNet2D
         uses: popsiclestick/gist-sync-action@v1.2.0
-        id: sync
+        id: sync-distnet2d
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gist_url: https://gist.github.com/jeanollion/789b9dbbda92da548401c7250f1631ad
@@ -29,7 +29,7 @@ jobs:
           github_file: training_scripts/training_distnet2d.py
       - name: update training DiSTNet2D seg
         uses: popsiclestick/gist-sync-action@v1.2.0
-        id: sync
+        id: sync-distnet2dseg
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gist_url: https://gist.github.com/jeanollion/8035170d925598817be05dafbea05e89
@@ -38,7 +38,7 @@ jobs:
           github_file: training_scripts/training_distnet2d_seg.py
       - name: update training pixmclass
         uses: popsiclestick/gist-sync-action@v1.2.0
-        id: sync
+        id: sync-pixmclass
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gist_url: https://gist.github.com/jeanollion/60ad55e49a69dbf08e337ce97b030ce5
