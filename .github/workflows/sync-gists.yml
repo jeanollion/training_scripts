@@ -8,12 +8,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - uses: popsiclestick/gist-sync-action@v1.2.0
         id: sync
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gist_url: https://gist.github.com/jeanollion/29ce794dfb68e51f643a358bb1b40cea
-          gist_title: training_core.py
+          gist_title: Training Core
           gist_description: Core script for DL training
-          github_file: training_core.py
+          github_file: training_scripts/training_core.py
