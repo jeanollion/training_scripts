@@ -1,10 +1,12 @@
 import argparse
 import os
+import sys
 import random
 import numpy as np
 import tensorflow as tf
 import h5py
 from dataset_iterator.image_data_generator import get_image_data_generator
+from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 from pix_mclass.utils import ensure_multiplicity
 from pix_mclass import get_unet, LogsCallback, EpsilonCosineDecayCallback
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
@@ -27,7 +29,7 @@ parser.add_argument("--min_learning_rate", type=float, help="minimal learning ra
 args = parser.parse_args()
 
 # get parameters
-print(f"files in config_dir={args.config_dir}: {os.listdir(args.config_dir)}")
+#print(f"python version={sys.version}")
 config = open_config_file(args.config_dir, args.test_data_augmentation)
 t_p = config["training_parameters"]
 model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
@@ -102,7 +104,7 @@ if args.export_only:
     print("model saved", flush=True)
 else:
     print(f"init iterator...", flush=True)
-    train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER if WORKERS==1 else 0, shuffle=SHUFFLE)
+    train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
     test_it = None
     if len(weight_list) > 1:
         # weighted sum of weights
@@ -171,8 +173,9 @@ else:
         print("start training...", flush=True)
         if N_EPOCHS > 0:
             if WORKERS > 1:
-                enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, int(WORKERS*1.5))))
+                #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
+                enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=True)
+                enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
                 gen = enq.get()
             else:
                 gen = train_it

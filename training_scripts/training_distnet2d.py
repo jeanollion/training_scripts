@@ -4,10 +4,12 @@ import random
 import numpy as np
 import tensorflow as tf
 import h5py
+import copy
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
 from dataset_iterator import extract_tile_random_zoom_function, ConcatIterator
 from dataset_iterator.utils import transpose_list
 from dataset_iterator.hard_sample_mining import HardSampleMiningCallback, compute_metrics
+from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 from distnet_2d.data import DyDxIterator
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
@@ -32,7 +34,6 @@ parser.add_argument("--min_learning_rate", type=float, help="minimal learning ra
 args = parser.parse_args()
 
 # get parameters
-print(f"files in config_dir={args.config_dir}: {os.listdir(args.config_dir)}")
 config = open_config_file(args.config_dir, args.test_data_augmentation)
 t_p = config["training_parameters"]
 model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
@@ -96,7 +97,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
                         **iterator_params)
 
 def init_model():
-    arch_args = config["model_architecture"]
+    arch_args = copy.deepcopy(config["model_architecture"])
     frame_window = arch_args.pop("frame_window", 3)
     next = arch_args.pop("next", True)
     arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
@@ -123,10 +124,10 @@ def configure_metrics_iterator(iterator):
         it.return_label_rank = True
     set_to_iterator(iterator, fun)
 
-def metrics_fun(input_shape, center_scale):
+def metrics_fun(input_shape, center_scale, frame_window):
     metrics_fun_ = get_metrics_fun(spatial_dims=input_shape, center_scale=center_scale)
     def fun(y_true, y_pred):
-        fw = 3
+        fw = frame_window
         n_frame_pairs = fw * 2
         n_frame_pairs += (fw - 1) * 2
         d_indices = [fw - 1, n_frame_pairs + fw]
@@ -199,7 +200,7 @@ else:
         configure_metrics_iterator(hsm_it)
         hard_sample_mining_param = t_p.get("hard_sample_mining", {})
         center_scale = hard_sample_mining_param.get("center_scale", 4)
-        metrics = compute_metrics(hsm_it, predict_fun, metrics_fun(input_shape, center_scale=center_scale), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+        metrics = compute_metrics(hsm_it, predict_fun, metrics_fun(input_shape, center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
         root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
         path = os.path.join(root_path, "metrics.csv")
         print(f"saving metrics of shape: {metrics.shape} to path: {path}", flush=True)
@@ -227,20 +228,24 @@ else:
         hard_sample_mining_param = t_p.get("hard_sample_mining", None)
         if hard_sample_mining_param is not None:
             predict_fun = lambda x: model(x, training=False)
-
             period = hard_sample_mining_param.get("period", 0.1)
-            if period <= 1:
+            if period < 1:
                 period = int(N_EPOCHS * period)
             center_scale = hard_sample_mining_param.get("center_scale", 4)
+            start_from = hard_sample_mining_param.get("start_from_epoch", 0)
             hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False) # needs to be a different iterator as iterator.return_central_only
             configure_metrics_iterator(hsm_it)
             input_shape = config["dataset_parameters"].get("input_shape", (512, 512))
-            proba_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(input_shape, center_scale=center_scale), period, start_epoch=START_EPOCH, skip_first=LOAD_WEIGHT_PATH is None or START_EPOCH < period, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), disable_channel_postprocessing=True, verbose=2)
-            callbacks.append(proba_cb)
+            hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(input_shape, center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), period, start_epoch=START_EPOCH, skip_first=LOAD_WEIGHT_PATH is None or START_EPOCH < period, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), disable_channel_postprocessing=True, verbose=2)
+            callbacks.append(hsm_cb)
+            hsm_cb.on_epoch_end(-1)
+        else:
+            hsm_cb = None
         if N_EPOCHS > 0:
             if WORKERS > 1:
-                enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, int(WORKERS + 1))))
+                #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
+                enq = OrderedEnqueuerCF(train_it, shuffle=True, wait_for_me=hsm_cb.wait_for_me if hsm_cb is not None else None, use_shm=True)
+                enq.start(workers=WORKERS, max_queue_size=max(2, min(STEP_NUMBER, WORKERS)))
                 gen = enq.get()
             else:
                 gen = train_it
