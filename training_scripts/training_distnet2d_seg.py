@@ -16,9 +16,9 @@ from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d_seg import get_distnet_2d_seg
 from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback
 from distnet_2d.data.medoid import get_medoid
-#from dataset_iterator.shared_mem_enqueuer import OrderedEnqueuerShm
+from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 
-from training_core import open_config_file, get_iterator
+from training_core import open_config_file, get_iterator, get_dataset_in_memory_if_possible
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -67,6 +67,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_name = ds_kwargs.get("channel_name", "raw")
     dataset = ds_kwargs["path"]
+    dataset = get_dataset_in_memory_if_possible(dataset)
     batch_size = ds_kwargs["batch_size"]
     if "tiling_parameters" in ds_kwargs:
         tiling_parameters = ds_kwargs["tiling_parameters"]
@@ -145,6 +146,9 @@ def init_model():
     timelapse = arch_args.pop("timelapse", False)
     if arch_args.get("architecture_type", "blend").lower() == "enc_dec":
         arch_args["architecture_type"] = "blend" # enc_dec is similar to distnet2d blend architecture, wihtout the blending part
+    shape = config["dataset_parameters"]["input_shape"]
+    input_shape = [None if s <= 0 else s for s in shape]
+    arch_args["spatial_dimensions"] = input_shape
     arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
     model = get_distnet_2d_seg(input_channels=channel_number, config=arch, skip_connections=skip_connections, shared_encoder=shared_encoder, accum_steps=1, l2_reg=0)
     if args.export_only:
@@ -220,21 +224,20 @@ else:
             eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
             callbacks.append(eps_schedule)
         if N_EPOCHS > 0:
+            train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=True)
             if WORKERS > 1:
-                init_it_fun = lambda: get_iterator(config, init_iterator, step_number=STEP_NUMBER if WORKERS==1 else 0, shuffle=True)
-                #if USE_SHARED_MEM:
-                #    enq = OrderedEnqueuerShm(init_it_fun(), use_multiprocessing=True, shuffle=True, use_shm=True, continuous=True)
-                #else:
-                enq = tf.keras.utils.OrderedEnqueuer(init_it_fun(), use_multiprocessing=True, shuffle=True)
-                enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, int(WORKERS*1.5))))
+                #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
+                enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=True)
+                enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
                 gen = enq.get()
             else:
-                gen = get_iterator(config, init_iterator, step_number=STEP_NUMBER if WORKERS==1 else 0, shuffle=SHUFFLE)
+                gen = train_it
             print("start training... ", flush=True)
             model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
             if WORKERS > 1:
                 enq.stop()
             print("training successful", flush=True)
+            train_it.close()
         # export model
         tf.saved_model.save(model, SAVED_MODEL_PATH)
         print("model saved", flush=True)

@@ -9,4 +9,5 @@ RUN pip install tensorflow-probability==0.15.0
 RUN pip install scipy scikit-learn scikit-image tifffile imageio elasticdeform edt
 RUN pip install numba
 RUN pip install scikit-fmm
-#RUN pip install SharedArray
+RUN pip install psutil
+RUN pip install --upgrade h5py==3.9.0

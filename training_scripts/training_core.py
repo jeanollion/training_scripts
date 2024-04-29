@@ -1,7 +1,9 @@
 import json, os
+import psutil
 from dataset_iterator import ConcatIterator
 from dataset_iterator.utils import transpose_list, is_null, ensure_multiplicity, is_list
 from dataset_iterator.helpers import get_optimal_tiling
+from dataset_iterator.datasetIO import get_datasetIO, MemoryIO
 
 def merge_dicts(primary_dict, secondary_dict):
     result = {**secondary_dict, **primary_dict}
@@ -83,6 +85,15 @@ def convert_bool(obj):
     if isinstance(obj, dict):
         return {convert_bool(key):convert_bool(value) for key, value in obj.items()}
     return obj
+
+def get_dataset_in_memory_if_possible(dataset, max_memory_fraction:float=0.25, max_file_size_gb:float=10):
+    file_size_gb = os.stat(dataset).st_size / (1024 * 1024 * 1000)
+    mem = psutil.virtual_memory().available / (1024 * 1024 * 1000)
+    if file_size_gb < max_memory_fraction * mem and file_size_gb < max_file_size_gb:  # load dataset in memory
+        dataset = get_datasetIO(dataset)
+        dataset = MemoryIO(dataset)
+        print(f"dataset will be loaded in memory (dataset file size size: {file_size_gb:.4f}/{min(max_file_size_gb, max_memory_fraction * mem):.4f}Gb total memory={mem:.4f}Gb)")
+    return dataset
 
 def get_iterator(config, init_iterator, **kwargs):
     step_number = kwargs.pop("step_number", config["training_parameters"]["step_number"])

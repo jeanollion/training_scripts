@@ -7,11 +7,12 @@ import tensorflow as tf
 import h5py
 from dataset_iterator.image_data_generator import get_image_data_generator
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
+
 from pix_mclass.utils import ensure_multiplicity
 from pix_mclass import get_unet, LogsCallback, EpsilonCosineDecayCallback
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
 import pix_mclass.training as pmt
-from training_core import open_config_file, get_iterator
+from training_core import open_config_file, get_iterator, get_dataset_in_memory_if_possible
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -57,6 +58,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
         channel_names = [channel_names]
     classes_name = ds_kwargs.get("classes_name", "classes")
     dataset = ds_kwargs["path"]
+    dataset = get_dataset_in_memory_if_possible(dataset)
     weights = get_class_weights(dataset, classes_name) # TODO limit class weights with user defined range
     scaling_parameters = data_aug_params.get("scaling_parameters", None)
     if scaling_parameters is not None:
@@ -159,9 +161,6 @@ else:
         model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]), loss=loss)
 
         # perform training
-        train_it._close_datasetIO()
-        if test_it is not None:
-            test_it._close_datasetIO()
         checkpoint = tf.keras.callbacks.ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
         lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
         ton_cb = tf.keras.callbacks.TerminateOnNaN()
@@ -172,6 +171,7 @@ else:
             callbacks.append(eps_schedule)
         print("start training...", flush=True)
         if N_EPOCHS > 0:
+            train_it.open()
             if WORKERS > 1:
                 #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
                 enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=True)
@@ -183,6 +183,7 @@ else:
             if WORKERS > 1:
                 enq.stop()
             print("training successful", flush=True)
+        train_it.close()
         # export model
         tf.saved_model.save(model, SAVED_MODEL_PATH)
         print("model saved", flush=True)

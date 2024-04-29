@@ -16,7 +16,7 @@ from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
 from distnet_2d.utils.objectwise_computation_tf import get_metrics_fun
-from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator
+from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, get_dataset_in_memory_if_possible
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -60,6 +60,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
     arch_params = config["model_architecture"]
     channel_name = ds_kwargs.get("channel_name", "raw")
     dataset = ds_kwargs["path"]
+    dataset = get_dataset_in_memory_if_possible(dataset)
     batch_size = ds_kwargs["batch_size"]
     if "tiling_parameters" in ds_kwargs:
         tiling_parameters = ds_kwargs["tiling_parameters"]
@@ -100,9 +101,11 @@ def init_model():
     arch_args = copy.deepcopy(config["model_architecture"])
     frame_window = arch_args.pop("frame_window", 3)
     next = arch_args.pop("next", True)
-    arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
     shape = config["dataset_parameters"]["input_shape"]
     input_shape = [None if s <= 0 else s for s in shape]
+    arch_args["spatial_dimensions"] = input_shape
+    arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
+
     model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0)
     if args.export_only:
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
@@ -211,9 +214,6 @@ else:
         model = init_model()
         model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
         # perform training
-        train_it._close_datasetIO()
-        if test_it is not None:
-            test_it._close_datasetIO()
         checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
         lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
         tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
@@ -239,9 +239,11 @@ else:
             hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(input_shape, center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), period, start_epoch=START_EPOCH, skip_first=LOAD_WEIGHT_PATH is None or START_EPOCH < period, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), disable_channel_postprocessing=True, verbose=2)
             callbacks.append(hsm_cb)
             hsm_cb.on_epoch_end(-1)
+            hsm_it.close()
         else:
             hsm_cb = None
         if N_EPOCHS > 0:
+            train_it.open()
             if WORKERS > 1:
                 #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
                 enq = OrderedEnqueuerCF(train_it, shuffle=True, wait_for_me=hsm_cb.wait_for_me if hsm_cb is not None else None, use_shm=True)
@@ -254,6 +256,7 @@ else:
             if WORKERS > 1:
                 enq.stop()
             print("training successful", flush=True)
+        train_it.close()
         # export model
         model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
         print("model saved", flush=True)
