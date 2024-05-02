@@ -18,7 +18,7 @@ from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback
 from distnet_2d.data.medoid import get_medoid
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 
-from training_core import open_config_file, get_iterator, get_dataset_in_memory_if_possible
+from training_core import open_config_file, get_iterator, get_shm_dataset, get_shm_info
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -67,7 +67,9 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_name = ds_kwargs.get("channel_name", "raw")
     dataset = ds_kwargs["path"]
-    dataset = get_dataset_in_memory_if_possible(dataset)
+    if WORKERS > 1:
+        print(f"force shm : {ds_kwargs.get('shared_memory', False)}")
+        dataset = get_shm_dataset(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
     batch_size = ds_kwargs["batch_size"]
     if "tiling_parameters" in ds_kwargs:
         tiling_parameters = ds_kwargs["tiling_parameters"]
@@ -226,6 +228,10 @@ else:
         if N_EPOCHS > 0:
             train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=True)
             if WORKERS > 1:
+                # check available shm:
+                shm = get_shm_info()
+                if shm is not None and shm[2] < 1:
+                    print( f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
                 #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
                 enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=True)
                 enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))

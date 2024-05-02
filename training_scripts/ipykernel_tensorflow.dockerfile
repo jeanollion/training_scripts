@@ -9,6 +9,5 @@ RUN pip install numba
 RUN pip install scikit-fmm
 RUN pip install matplotlib==3.8.2
 RUN pip install ipython ipykernel
-RUN pip install psutil
 RUN pip install --upgrade h5py==3.9.0
 ENV NUMBA_NUM_THREADS=1

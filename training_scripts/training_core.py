@@ -1,5 +1,5 @@
 import json, os
-import psutil
+import subprocess
 from dataset_iterator import ConcatIterator
 from dataset_iterator.utils import transpose_list, is_null, ensure_multiplicity, is_list
 from dataset_iterator.helpers import get_optimal_tiling
@@ -86,13 +86,22 @@ def convert_bool(obj):
         return {convert_bool(key):convert_bool(value) for key, value in obj.items()}
     return obj
 
-def get_dataset_in_memory_if_possible(dataset, max_memory_fraction:float=0.25, max_file_size_gb:float=10):
-    file_size_gb = os.stat(dataset).st_size / (1024 * 1024 * 1000)
-    mem = psutil.virtual_memory().available / (1024 * 1024 * 1000)
-    if file_size_gb < max_memory_fraction * mem and file_size_gb < max_file_size_gb:  # load dataset in memory
+def get_shm_dataset(dataset, mode:str= "auto", min_free_shm_gb:float=1, max_file_size_gb:float=16):
+    if mode == "auto":
+        file_size_gb = os.stat(dataset).st_size / (1024 * 1024 * 1000)
+        shared_mem_info = get_shm_info()
+        remain_ok = True
+        if shared_mem_info is not None:
+            shm_total = shared_mem_info[0]
+            shm_avail = shared_mem_info[2]
+            remain = shm_avail - file_size_gb * 2 # estimation of deflate factor..
+            remain_ok = min_free_shm_gb <= remain
+            print(f"load dataset in memory test: available shm: {shm_avail:.2f}G / {shm_total:.2f}G file size: {file_size_gb:.2f} load in memory: {remain_ok}")
+        if remain_ok and file_size_gb < max_file_size_gb:
+            mode = "true"
+    if mode == "true":  # load dataset in memory
         dataset = get_datasetIO(dataset)
         dataset = MemoryIO(dataset)
-        print(f"dataset will be loaded in memory (dataset file size size: {file_size_gb:.4f}/{min(max_file_size_gb, max_memory_fraction * mem):.4f}Gb total memory={mem:.4f}Gb)")
     return dataset
 
 def get_iterator(config, init_iterator, **kwargs):
@@ -101,6 +110,7 @@ def get_iterator(config, init_iterator, **kwargs):
     input_shape = config["dataset_parameters"].get("input_shape", (512, 512))
     ensure_multiplicity(2, input_shape)
     concat = len(config["dataset_list"])>1
+    weight_limit = config["dataset_parameters"].get("loss_weight_range", None)
     for i, ds_conf in enumerate(config["dataset_list"]):
         batch_size = config["dataset_parameters"]["batch_size"]
         tiling_parameters = ds_conf.get("tiling_parameters", None)
@@ -119,6 +129,8 @@ def get_iterator(config, init_iterator, **kwargs):
                 assert batch_size % n_tiles == 0, f"Error at dataset {i} : batch_size = {batch_size} is not divisible by n_tiles = {n_tiles}"
                 ds_conf["batch_size"] = batch_size//n_tiles
             print(f"dataset {i}: n_tiles={n_tiles} batch_size={batch_size}", flush=True)
+        if weight_limit is not None and "loss_weigh_range" not in ds_conf:
+            ds_conf["loss_weigh_range"] = weight_limit
     iterator_list, concat_proportion = [], []
     for ds_conf in config["dataset_list"]:
         it = init_iterator(step_number=0 if concat else step_number, shuffle=shuffle, **ds_conf)
@@ -150,3 +162,30 @@ def chain_pp_fun(pp_fun_list):
             for f in pp_fun_list:
                 f(batch_by_channel)
         return fun
+
+def get_shm_info(verbose:int=1):
+    command = subprocess.run(["df", "-P", "-k"], capture_output=True, text=True)
+    if command.returncode != 0:
+        if verbose >= 1:
+            print(f"Could not extract shm info. The command failed with return code: {command.returncode}", flush=True)
+        values = None
+    else:
+        res = command.stdout
+        res = res.splitlines()
+        res = [l.split() for l in res]
+        if res[0][-1] == "on" and res[0][-2] == "Mounted":
+            del res[0][-1]
+            res[0][-1] = "Mounted on"
+        shm_line = [l for l in res if l[0] == "shm"]
+        if len(shm_line) == 0:
+            shm_line = [l for l in res if "shm" in l[-1]]
+        to_number = lambda number: float(number[:-1]) if number[-1] == "%" else float(int(number)/1024)/1000.
+        if len(shm_line) == 1:
+            values = [to_number(s) for s in shm_line[0][1:-1]]
+            if verbose >= 2:
+                print(f"shm info: total: {values[0]:.2f}G, used: {values[1]:.2f}G ({values[3]:.1f}%), available: {values[2]:.2f}G", flush=True)
+        else:
+            if verbose >= 1:
+                print(f"Could not extract shm info. Command output: \n{command.stdout}", flush=True)
+            values = None
+    return values

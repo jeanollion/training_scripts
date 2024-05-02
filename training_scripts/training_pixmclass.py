@@ -12,7 +12,7 @@ from pix_mclass.utils import ensure_multiplicity
 from pix_mclass import get_unet, LogsCallback, EpsilonCosineDecayCallback
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
 import pix_mclass.training as pmt
-from training_core import open_config_file, get_iterator, get_dataset_in_memory_if_possible
+from training_core import open_config_file, get_iterator, get_shm_dataset, get_shm_info
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -58,8 +58,15 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
         channel_names = [channel_names]
     classes_name = ds_kwargs.get("classes_name", "classes")
     dataset = ds_kwargs["path"]
-    dataset = get_dataset_in_memory_if_possible(dataset)
-    weights = get_class_weights(dataset, classes_name) # TODO limit class weights with user defined range
+    if WORKERS > 1:
+        print(f"force shm : {ds_kwargs.get('shared_memory', False)}")
+        dataset = get_shm_dataset(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+    weights = get_class_weights(dataset, classes_name) # inverse frequency
+    weight_limit = ds_kwargs.get("loss_weight_range", None)
+    if weight_limit is not None:
+        assert len(weight_limit) == 2, "Weight limit should be of length 2"
+        weights = np.minimum(weights, np.max(weight_limit))
+        weights = np.maximum(weights, np.min(weight_limit))
     scaling_parameters = data_aug_params.get("scaling_parameters", None)
     if scaling_parameters is not None:
         scaling_parameters = ensure_multiplicity(len(channel_names), scaling_parameters)
@@ -113,13 +120,14 @@ else:
         weights = np.zeros_like(weight_list[0])
         tot = 0
         for it, w in zip(train_it.iterators, weight_list):
-            l = len(it)
+            l = it.get_sample_number() # usually differs from len(it)
             tot += l
             weights += w * l
         weights /= tot
     else:
         weights = weight_list[0]
     print(f"Class weights: {weights}", flush=True)
+
     if args.test_data_augmentation:
         test_param = config.get("test_data_augmentation_parameters", {})
         input_only = test_param.get("input_only", True)
@@ -173,6 +181,10 @@ else:
         if N_EPOCHS > 0:
             train_it.open()
             if WORKERS > 1:
+                # check available shm:
+                shm = get_shm_info(verbose=2)
+                if shm is not None and shm[2] < 1:
+                    print(f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
                 #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
                 enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=True)
                 enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
