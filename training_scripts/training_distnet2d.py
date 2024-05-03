@@ -61,7 +61,6 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
     channel_name = ds_kwargs.get("channel_name", "raw")
     dataset = ds_kwargs["path"]
     if WORKERS > 1:
-        print(f"force shm : {ds_kwargs.get('shared_memory', False)}")
         dataset = get_shm_dataset(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
     batch_size = ds_kwargs["batch_size"]
     if "tiling_parameters" in ds_kwargs:
@@ -224,7 +223,7 @@ else:
             callbacks.append(tensorboard_callback)
         log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
         callbacks.append(log_cb)
-        if EPSILON_RANGE[1]!=EPSILON_RANGE[0]:
+        if EPSILON_RANGE[1] != EPSILON_RANGE[0]:
             eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
             callbacks.append(eps_schedule)
         hard_sample_mining_param = t_p.get("hard_sample_mining", None)
@@ -238,7 +237,7 @@ else:
             hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False) # needs to be a different iterator as iterator.return_central_only
             configure_metrics_iterator(hsm_it)
             input_shape = config["dataset_parameters"].get("input_shape", (512, 512))
-            hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(input_shape, center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), period, start_epoch=START_EPOCH, skip_first=LOAD_WEIGHT_PATH is None or START_EPOCH < period, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), disable_channel_postprocessing=True, verbose=2)
+            hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(input_shape, center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), disable_channel_postprocessing=True, verbose=2)
             callbacks.append(hsm_cb)
             hsm_cb.on_epoch_end(-1)
             hsm_it.close()
