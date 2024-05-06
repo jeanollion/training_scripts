@@ -259,9 +259,11 @@ else:
             print("start training... ", flush=True)
             model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
             if WORKERS > 1:
+                print("stopping enqueuer...", flush=True)
                 enq.stop()
-            print("training successful", flush=True)
+            print("end of training", flush=True)
         train_it.close()
         # export model
+        print("saving model...", flush=True)
         model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
         print("model saved", flush=True)
