@@ -5,6 +5,7 @@ import numpy as np
 import tensorflow as tf
 import h5py
 import copy
+from importlib.metadata import version
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
 from dataset_iterator import extract_tile_random_zoom_function, ConcatIterator
 from dataset_iterator.utils import transpose_list
@@ -17,6 +18,8 @@ from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
 from distnet_2d.utils.objectwise_computation_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, get_shm_dataset, get_shm_info
+
+__VERSION__ = '1.0.0'
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -52,6 +55,7 @@ EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
 WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
 SHUFFLE = not args.test_data_augmentation
 START_EPOCH = t_p.get("start_epoch", 0)
+print(f"Script version: {__VERSION__} dataset_iterator version: {version('dataset_iterator')} distnet version: {version('DiSTNet2D')}")
 print(f"configuration file found. ")
 
 def init_iterator(step_number, shuffle, **ds_kwargs):
