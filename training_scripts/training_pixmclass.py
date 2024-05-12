@@ -58,8 +58,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
         channel_names = [channel_names]
     classes_name = ds_kwargs.get("classes_name", "classes")
     dataset = ds_kwargs["path"]
-    if WORKERS > 1:
-        print(f"force shm : {ds_kwargs.get('shared_memory', False)}")
+    if WORKERS > 1 and not args.test_data_augmentation:
         dataset = get_shm_dataset(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
     weights = get_class_weights(dataset, classes_name) # inverse frequency
     weight_limit = ds_kwargs.get("loss_weight_range", None)

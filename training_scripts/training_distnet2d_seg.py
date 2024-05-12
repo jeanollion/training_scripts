@@ -67,8 +67,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_name = ds_kwargs.get("channel_name", "raw")
     dataset = ds_kwargs["path"]
-    if WORKERS > 1:
-        print(f"force shm : {ds_kwargs.get('shared_memory', False)}")
+    if WORKERS > 1 and not args.test_data_augmentation:
         dataset = get_shm_dataset(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
     batch_size = ds_kwargs["batch_size"]
     if "tiling_parameters" in ds_kwargs:
