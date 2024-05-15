@@ -16,11 +16,10 @@ from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
-from distnet_2d.utils.objectwise_computation_tf import get_metrics_fun
+from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, get_shm_dataset, get_shm_info
 
-__VERSION__ = '1.0.0'
-
+__VERSION__ = '1.0.1'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
@@ -132,8 +131,8 @@ def configure_metrics_iterator(iterator):
         it.return_label_rank = True
     set_to_iterator(iterator, fun)
 
-def metrics_fun(input_shape, center_scale, frame_window):
-    metrics_fun_ = get_metrics_fun(spatial_dims=input_shape, center_scale=center_scale)
+def metrics_fun(center_scale, frame_window):
+    metrics_fun_ = get_metrics_fun(center_scale=center_scale)
     def fun(y_true, y_pred):
         fw = frame_window
         n_frame_pairs = fw * 2
@@ -161,9 +160,10 @@ else:
         for ds_params in config["dataset_list"]:
             ds_params["data_augmentation"]["frame_subsampling"] = test_param["frame_subsampling"]
     #it_steps = STEP_NUMBER if WORKERS==1 else 0
-    train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
+
     test_it = None
     if args.test_data_augmentation:
+        train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
         test_param = config.get("test_data_augmentation_parameters", {})
         input_only = test_param.get("input_only", True)
         n_iterations = test_param.get("iteration_number", 10)
@@ -186,6 +186,7 @@ else:
             if not input_only:
                 outputs.append(output)
             print(f"{i + 1}/{n_iterations}", flush=True)
+        train_it.close()
         input = np.stack(inputs, 0)
         transpose_axis = [4, 0, 1, 2, 3]
         input = np.transpose(input, transpose_axis)
@@ -203,17 +204,18 @@ else:
         model = init_model()
         model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
         predict_fun = lambda x: model(x, training=False)
-        input_shape = config["dataset_parameters"].get("input_shape", (512, 512))
         hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False)
         configure_metrics_iterator(hsm_it)
         hard_sample_mining_param = t_p.get("hard_sample_mining", {})
-        center_scale = hard_sample_mining_param.get("center_scale", 4)
-        metrics = compute_metrics(hsm_it, predict_fun, metrics_fun(input_shape, center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+        center_scale = hard_sample_mining_param.get("center_scale", 4) if hard_sample_mining_param is not None else 4
+        metrics = compute_metrics(hsm_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+        hsm_it.close()
         root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
         path = os.path.join(root_path, "metrics.csv")
         print(f"saving metrics of shape: {metrics.shape} to path: {path}", flush=True)
-        np.savetxt(path, metrics, delimiter=";", header="IoU;CenterL2;DisplacementL2;LinkMultiplicity")
+        np.savetxt(path, metrics, delimiter=";", header="IoU;CenterPosition;CenterValue;DisplacementL2;LinkMultiplicity")
     else: # training
+        train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
         # init model
         print("init model...", flush=True)
         model = init_model()
@@ -240,8 +242,7 @@ else:
             start_from = hard_sample_mining_param.get("start_from_epoch", 0)
             hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False) # needs to be a different iterator as iterator.return_central_only
             configure_metrics_iterator(hsm_it)
-            input_shape = config["dataset_parameters"].get("input_shape", (512, 512))
-            hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(input_shape, center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), disable_channel_postprocessing=True, verbose=2)
+            hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), disable_channel_postprocessing=True, verbose=2)
             callbacks.append(hsm_cb)
             hsm_cb.on_epoch_end(-1)
             hsm_it.close()
