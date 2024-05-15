@@ -19,7 +19,7 @@ from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback,
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, get_shm_dataset, get_shm_info
 
-__VERSION__ = '1.0.1'
+__VERSION__ = '1.0.2'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
