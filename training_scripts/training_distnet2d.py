@@ -132,7 +132,7 @@ def configure_metrics_iterator(iterator):
     set_to_iterator(iterator, fun)
 
 def metrics_fun(center_scale, frame_window):
-    metrics_fun_ = get_metrics_fun(center_scale=center_scale)
+    metrics_fun_ = get_metrics_fun(center_scale=center_scale, reduce=True)
     def fun(y_true, y_pred):
         fw = frame_window
         n_frame_pairs = fw * 2
