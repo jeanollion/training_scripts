@@ -86,7 +86,7 @@ def convert_bool(obj):
         return {convert_bool(key):convert_bool(value) for key, value in obj.items()}
     return obj
 
-def get_shm_dataset(dataset, mode:str= "auto", min_free_shm_gb:float=1, max_file_size_gb:float=16):
+def should_load_dataset_in_shm(dataset, mode:str= "auto", min_free_shm_gb:float=1, max_file_size_gb:float=16):
     if mode == "auto":
         file_size_gb = os.stat(dataset).st_size / (1024 * 1024 * 1000)
         shared_mem_info = get_shm_info()
@@ -99,10 +99,7 @@ def get_shm_dataset(dataset, mode:str= "auto", min_free_shm_gb:float=1, max_file
             print(f"load dataset in memory test: available shm: {shm_avail:.2f}G / {shm_total:.2f}G file size: {file_size_gb:.2f} load in memory: {remain_ok}")
         if remain_ok and file_size_gb < max_file_size_gb:
             mode = "true"
-    if mode == "true":  # load dataset in memory
-        dataset = get_datasetIO(dataset)
-        dataset = MemoryIO(dataset)
-    return dataset
+    return mode == "true"
 
 def get_iterator(config, init_iterator, **kwargs):
     step_number = kwargs.pop("step_number", config["training_parameters"]["step_number"])
@@ -162,6 +159,13 @@ def chain_pp_fun(pp_fun_list):
             for f in pp_fun_list:
                 f(batch_by_channel)
         return fun
+
+def get_shm_nfiles(shm_dir:str="/dev/shm"):
+    command = subprocess.run(["ls", shm_dir], capture_output=True, text=True)
+    if command.returncode != 0:
+        return "could not check shm files"
+    else:
+        return command.stdout
 
 def get_shm_info(verbose:int=1):
     command = subprocess.run(["df", "-P", "-k"], capture_output=True, text=True)

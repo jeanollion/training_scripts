@@ -5,6 +5,7 @@ import random
 import numpy as np
 import tensorflow as tf
 import h5py
+from importlib.metadata import version
 from dataset_iterator.image_data_generator import get_image_data_generator
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 
@@ -12,7 +13,9 @@ from pix_mclass.utils import ensure_multiplicity
 from pix_mclass import get_unet, LogsCallback, EpsilonCosineDecayCallback
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
 import pix_mclass.training as pmt
-from training_core import open_config_file, get_iterator, get_shm_dataset, get_shm_info
+from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info
+
+__VERSION__ = "1.0.0"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -30,7 +33,6 @@ parser.add_argument("--min_learning_rate", type=float, help="minimal learning ra
 args = parser.parse_args()
 
 # get parameters
-#print(f"python version={sys.version}")
 config = open_config_file(args.config_dir, args.test_data_augmentation)
 t_p = config["training_parameters"]
 model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
@@ -49,6 +51,8 @@ EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
 WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
 SHUFFLE = not args.test_data_augmentation
 START_EPOCH = t_p.get("epoch_start", 0)
+
+print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; PixMClass version: {version('PixMClass')}")
 print(f"configuration file found. ")
 
 def init_iterator(step_number, shuffle, **ds_kwargs):
@@ -58,8 +62,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
         channel_names = [channel_names]
     classes_name = ds_kwargs.get("classes_name", "classes")
     dataset = ds_kwargs["path"]
-    if WORKERS > 1 and not args.test_data_augmentation:
-        dataset = get_shm_dataset(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+    memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
     weights = get_class_weights(dataset, classes_name) # inverse frequency
     weight_limit = ds_kwargs.get("loss_weight_range", None)
     if weight_limit is not None:
@@ -84,7 +87,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
     
     batch_size = ds_kwargs["batch_size"]
     tiling_parameters = ds_kwargs.get("tiling_parameters", None)
-    return pmt.get_iterator(dataset, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
+    return pmt.get_iterator(dataset, memory_persistent=memory_persistent, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
         input_channel_keywords=channel_names, class_keyword=classes_name,
         train_group_keyword=ds_kwargs.get("keyword", None),
         tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number, dtype="float32", shuffle=shuffle,

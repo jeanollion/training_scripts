@@ -8,6 +8,8 @@ import h5py
 from math import isnan
 import skfmm
 import edt
+import warnings
+from importlib.metadata import version
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
 from dataset_iterator import extract_tile_random_zoom_function
 from dataset_iterator.utils import transpose_list
@@ -18,7 +20,8 @@ from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback
 from distnet_2d.data.medoid import get_medoid
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 
-from training_core import open_config_file, get_iterator, get_shm_dataset, get_shm_info
+from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info
+__VERSION__ = "1.0.0"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -35,7 +38,6 @@ parser.add_argument("--min_learning_rate", type=float, help="minimal learning ra
 args = parser.parse_args()
 
 # get parameters
-print(f"files in config_dir={args.config_dir}: {os.listdir(args.config_dir)}")
 config = open_config_file(args.config_dir, args.test_data_augmentation)
 t_p = config["training_parameters"]
 model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
@@ -57,18 +59,20 @@ SHUFFLE = not args.test_data_augmentation
 START_EPOCH = t_p.get("epoch_start", 0)
 
 #h5py._errors.silence_errors()
-import warnings
+
 warnings.filterwarnings("ignore")
 
+print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
 print(f"configuration file found. ")
+
+
 def init_iterator(step_number, shuffle, **ds_kwargs):
     timelapse = config["model_architecture"].get("timelapse", False)
     channel_number = config["model_architecture"].get("channel_number", 1)
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_name = ds_kwargs.get("channel_name", "raw")
     dataset = ds_kwargs["path"]
-    if WORKERS > 1 and not args.test_data_augmentation:
-        dataset = get_shm_dataset(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+    memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get( "shared_memory", "auto"))
     batch_size = ds_kwargs["batch_size"]
     if "tiling_parameters" in ds_kwargs:
         tiling_parameters = ds_kwargs["tiling_parameters"]
@@ -126,7 +130,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
                            channels_postprocessing_function=pp_fun,
                            output_postprocessing_functions=[apply_batchwise(edm_fun), apply_batchwise(gcdm_fun)],
                            void_mask_proportion=[0, 0] if exclude_void else None,
-                           verbose=False and args.test_data_augmentation)
+                           verbose=False and args.test_data_augmentation, memory_persistent=memory_persistent)
     # either timelapse or multichannel iterator
     if not timelapse:
         return MultiChannelIterator(**iterator_params)

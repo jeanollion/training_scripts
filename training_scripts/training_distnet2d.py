@@ -17,7 +17,7 @@ from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
 from distnet_2d.utils.metrics_tf import get_metrics_fun
-from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, get_shm_dataset, get_shm_info
+from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, get_shm_info, get_shm_nfiles
 
 __VERSION__ = '1.0.2'
 parser = argparse.ArgumentParser()
@@ -54,8 +54,10 @@ EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
 WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
 SHUFFLE = not args.test_data_augmentation
 START_EPOCH = t_p.get("start_epoch", 0)
-print(f"Script version: {__VERSION__} dataset_iterator version: {version('dataset_iterator')} distnet version: {version('DiSTNet2D')}")
+
+print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
 print(f"configuration file found. ")
+
 
 def init_iterator(step_number, shuffle, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
@@ -63,8 +65,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
     arch_params = config["model_architecture"]
     channel_name = ds_kwargs.get("channel_name", "raw")
     dataset = ds_kwargs["path"]
-    if WORKERS > 1 and not args.test_data_augmentation:
-        dataset = get_shm_dataset(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+    memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
     batch_size = ds_kwargs["batch_size"]
     if "tiling_parameters" in ds_kwargs:
         tiling_parameters = ds_kwargs["tiling_parameters"]
@@ -95,7 +96,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
                            frame_window=arch_params.get("frame_window", 3),
                            image_data_generators=[data_generator, mask_generator],
                            elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
-                           channels_postprocessing_function=pp_fun, verbose=False and args.test_data_augmentation)
+                           channels_postprocessing_function=pp_fun, verbose=False and args.test_data_augmentation, memory_persistent=memory_persistent)
     return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_kwargs.get("keyword", None),
                         batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun,
                         aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=shuffle,
@@ -132,7 +133,7 @@ def configure_metrics_iterator(iterator):
     set_to_iterator(iterator, fun)
 
 def metrics_fun(center_scale, frame_window):
-    metrics_fun_ = get_metrics_fun(center_scale=center_scale, reduce=True)
+    metrics_fun_ = get_metrics_fun(center_scale=center_scale)
     def fun(y_true, y_pred):
         fw = frame_window
         n_frame_pairs = fw * 2
@@ -209,10 +210,10 @@ else:
         hard_sample_mining_param = t_p.get("hard_sample_mining", {})
         center_scale = hard_sample_mining_param.get("center_scale", 4) if hard_sample_mining_param is not None else 4
         metrics = compute_metrics(hsm_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
-        hsm_it.close()
         root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
         path = os.path.join(root_path, "metrics.csv")
         print(f"saving metrics of shape: {metrics.shape} to path: {path}", flush=True)
+        #print(f"shm n files: {get_shm_nfiles()}")
         np.savetxt(path, metrics, delimiter=";", header="IoU;CenterPosition;CenterValue;DisplacementL2;LinkMultiplicity")
     else: # training
         train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
@@ -249,7 +250,6 @@ else:
         else:
             hsm_cb = None
         if N_EPOCHS > 0:
-            train_it.open()
             if WORKERS > 1:
                 # check available shm:
                 shm = get_shm_info()
