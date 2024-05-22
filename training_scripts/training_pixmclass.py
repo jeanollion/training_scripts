@@ -8,14 +8,14 @@ import h5py
 from importlib.metadata import version
 from dataset_iterator.image_data_generator import get_image_data_generator
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
-
+from dataset_iterator.keras_callbacks import EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
 from pix_mclass.utils import ensure_multiplicity
-from pix_mclass import get_unet, LogsCallback, EpsilonCosineDecayCallback
+from pix_mclass import get_unet
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
 import pix_mclass.training as pmt
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info
 
-__VERSION__ = "1.0.0"
+__VERSION__ = "1.0.1"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -171,7 +171,7 @@ else:
         model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]), loss=loss)
 
         # perform training
-        checkpoint = tf.keras.callbacks.ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
+        checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
         lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
         ton_cb = tf.keras.callbacks.TerminateOnNaN()
         log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
@@ -186,7 +186,7 @@ else:
                 # check available shm:
                 shm = get_shm_info(verbose=2)
                 if shm is not None and shm[2] < 1:
-                    print(f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
+                    print(f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", flush=True)
                 #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
                 enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=True)
                 enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))

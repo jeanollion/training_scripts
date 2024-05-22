@@ -14,14 +14,14 @@ from dataset_iterator.image_data_generator import get_image_data_generator, data
 from dataset_iterator import extract_tile_random_zoom_function
 from dataset_iterator.utils import transpose_list
 from dataset_iterator import MultiChannelIterator, TrackingIterator
+from dataset_iterator.keras_callbacks import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2
+from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d_seg import get_distnet_2d_seg
-from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback
 from distnet_2d.data.medoid import get_medoid
-from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info
-__VERSION__ = "1.0.0"
+__VERSION__ = "1.0.1"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -217,8 +217,8 @@ else:
         model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
         # perform training
         test_it = None
-        checkpoint = tf.keras.callbacks.ModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
-        lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
+        checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
+        lr_schedule = ReduceLROnPlateau2(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
         tensorboard_callback = None # tf.keras.callbacks.TensorBoard(LOG_PATH)
         callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
         if tensorboard_callback is not None:

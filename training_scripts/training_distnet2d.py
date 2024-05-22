@@ -11,15 +11,15 @@ from dataset_iterator import extract_tile_random_zoom_function, ConcatIterator
 from dataset_iterator.utils import transpose_list
 from dataset_iterator.hard_sample_mining import HardSampleMiningCallback, compute_metrics
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
+from dataset_iterator.keras_callbacks import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2
 from distnet_2d.data import DyDxIterator
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
-from distnet_2d.utils import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, get_shm_info, get_shm_nfiles
 
-__VERSION__ = '1.0.2'
+__VERSION__ = '1.0.3'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
@@ -222,7 +222,7 @@ else:
         model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
         # perform training
         checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
-        lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
+        lr_schedule = ReduceLROnPlateau2(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
         tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
         callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
         if tensorboard_callback is not None:
