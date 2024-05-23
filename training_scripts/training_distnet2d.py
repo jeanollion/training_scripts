@@ -19,7 +19,7 @@ from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, get_shm_info, get_shm_nfiles
 
-__VERSION__ = '1.0.3'
+__VERSION__ = '1.0.4'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
@@ -110,7 +110,7 @@ def init_model():
     input_shape = [None if s <= 0 else s for s in shape]
     arch_args["spatial_dimensions"] = input_shape
     arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
-    model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, gcdm_gradients=False, l2_reg=0)
+    model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0) # , edm_derivatives=True, gcdm_derivatives=True
     if args.export_only:
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
         model.load_weights(WEIGHT_PATH)
