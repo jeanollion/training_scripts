@@ -49,7 +49,7 @@ STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("ste
 PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
 LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
 MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
-EPSILON_RANGE = t_p.get("epsilon_range", [0.1, 1e-7])
+EPSILON_RANGE = t_p.get("epsilon_range", [1e-7, 1e-7])
 EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
 WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
 SHUFFLE = not args.test_data_augmentation
@@ -58,6 +58,11 @@ START_EPOCH = t_p.get("start_epoch", 0)
 print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
 print(f"configuration file found. ")
 
+# TEST VARIABLES TO ADD TO CONFIGURATION IF RELEVANT
+PREDICT_EDM_DERIVATIVES = False
+PREDICT_GCDM_DERIVATIVES = False
+EDM_DERIVATIVE_LOSS = False
+GCDM_DERIVATIVE_LOSS = False
 
 def init_iterator(step_number, shuffle, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
@@ -98,7 +103,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
                            elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                            channels_postprocessing_function=pp_fun, verbose=False and args.test_data_augmentation, memory_persistent=memory_persistent)
     return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_kwargs.get("keyword", None),
-                        batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun,
+                        batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=EDM_DERIVATIVE_LOSS or PREDICT_EDM_DERIVATIVES,
                         aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=shuffle,
                         **iterator_params)
 
@@ -110,7 +115,7 @@ def init_model():
     input_shape = [None if s <= 0 else s for s in shape]
     arch_args["spatial_dimensions"] = input_shape
     arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
-    model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0) # , edm_derivatives=True, gcdm_derivatives=True
+    model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, predict_edm_derivatives=PREDICT_EDM_DERIVATIVES, predict_gcdm_derivatives=PREDICT_GCDM_DERIVATIVES, edm_derivative_loss=EDM_DERIVATIVE_LOSS, gcdm_derivative_loss=GCDM_DERIVATIVE_LOSS)
     if args.export_only:
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
         model.load_weights(WEIGHT_PATH)
