@@ -11,6 +11,7 @@ import edt
 import warnings
 from importlib.metadata import version
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
+from dataset_iterator.datasetIO import MemoryIO
 from dataset_iterator import extract_tile_random_zoom_function
 from dataset_iterator.utils import transpose_list
 from dataset_iterator import MultiChannelIterator, TrackingIterator
@@ -66,13 +67,16 @@ print(f"Script version: {__VERSION__}; dataset_iterator version: {version('datas
 print(f"configuration file found. ")
 
 
-def init_iterator(step_number, shuffle, **ds_kwargs):
+def init_iterator(step_number, shuffle, dataset=None, **ds_kwargs):
     timelapse = config["model_architecture"].get("timelapse", False)
     channel_number = config["model_architecture"].get("channel_number", 1)
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_name = ds_kwargs.get("channel_name", "raw")
-    dataset = ds_kwargs["path"]
-    memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get( "shared_memory", "auto"))
+    if dataset is None:
+        dataset = ds_kwargs["path"]
+        memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get( "shared_memory", "auto"))
+    else:
+        memory_persistent = isinstance(dataset, MemoryIO)
     batch_size = ds_kwargs["batch_size"]
     if "tiling_parameters" in ds_kwargs:
         tiling_parameters = ds_kwargs["tiling_parameters"]
