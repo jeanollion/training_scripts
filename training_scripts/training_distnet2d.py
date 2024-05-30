@@ -7,6 +7,7 @@ import h5py
 import copy
 from importlib.metadata import version
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
+from dataset_iterator.datasetIO import MemoryIO
 from dataset_iterator import extract_tile_random_zoom_function, ConcatIterator
 from dataset_iterator.utils import transpose_list
 from dataset_iterator.hard_sample_mining import HardSampleMiningCallback, compute_metrics
@@ -59,18 +60,22 @@ print(f"Script version: {__VERSION__}; dataset_iterator version: {version('datas
 print(f"configuration file found. ")
 
 # TEST VARIABLES TO ADD TO CONFIGURATION IF RELEVANT
-PREDICT_EDM_DERIVATIVES = False
-PREDICT_GCDM_DERIVATIVES = False
+PREDICT_EDM_DERIVATIVES = True
+PREDICT_GCDM_DERIVATIVES = True
 EDM_DERIVATIVE_LOSS = False
 GCDM_DERIVATIVE_LOSS = False
 
-def init_iterator(step_number, shuffle, **ds_kwargs):
+
+def init_iterator(step_number, shuffle, dataset=None, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     dataset_features = ds_kwargs.get("dataset_features", {})
     arch_params = config["model_architecture"]
     channel_name = ds_kwargs.get("channel_name", "raw")
-    dataset = ds_kwargs["path"]
-    memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+    if dataset is None:
+        dataset = ds_kwargs["path"]
+        memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+    else:
+        memory_persistent = isinstance(dataset, MemoryIO)
     batch_size = ds_kwargs["batch_size"]
     if "tiling_parameters" in ds_kwargs:
         tiling_parameters = ds_kwargs["tiling_parameters"]
@@ -107,6 +112,7 @@ def init_iterator(step_number, shuffle, **ds_kwargs):
                         aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=shuffle,
                         **iterator_params)
 
+
 def init_model():
     arch_args = copy.deepcopy(config["model_architecture"])
     frame_window = arch_args.pop("frame_window", 3)
@@ -129,6 +135,7 @@ def init_model():
         print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
     return model
 
+
 def configure_metrics_iterator(iterator):
     def fun(it):
         it.return_central_only=True
@@ -136,21 +143,23 @@ def configure_metrics_iterator(iterator):
         it.return_label_rank = True
     set_to_iterator(iterator, fun)
 
-def metrics_fun(center_scale, frame_window):
+
+def metrics_fun(center_scale, frame_window, long_range:bool=True):
     metrics_fun_ = get_metrics_fun(center_scale=center_scale)
     def fun(y_true, y_pred):
         fw = frame_window
         n_frame_pairs = fw * 2
-        n_frame_pairs += (fw - 1) * 2
+        if long_range:
+            n_frame_pairs += (fw - 1) * 2
         d_indices = [fw - 1, n_frame_pairs + fw]
-        lm_indices = list(range(n_frame_pairs * 3)[3 * (fw - 1):3 * fw]) + list(
-            range(n_frame_pairs * 6)[3 * (n_frame_pairs + fw):3 * (n_frame_pairs + fw + 1)])
+        lm_indices = [d_indices[0] * 3 + i for i in range(3)] + [d_indices[1] * 3 + i for i in range(3)]
         return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1],
                             tf.gather(y_pred[2], indices=d_indices, axis=-1),
                             tf.gather(y_pred[3], indices=d_indices, axis=-1),
                             tf.gather(y_pred[4], indices=lm_indices, axis=-1), y_true[0], y_true[2], y_true[3],
                             y_true[4], y_true[5], y_true[6], y_true[7])
     return fun
+
 
 if args.export_only:
     print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})", flush=True)
@@ -245,13 +254,13 @@ else:
                 period = int(N_EPOCHS * period)
             center_scale = hard_sample_mining_param.get("center_scale", 4)
             start_from = hard_sample_mining_param.get("start_from_epoch", 0)
-            hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False) # needs to be a different iterator as iterator.return_central_only
+            hsm_it = get_iterator(config, init_iterator, existing_iterator=train_it, step_number=0, shuffle=False) # needs to be a different iterator as iterator.return_central_only
             configure_metrics_iterator(hsm_it)
             hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), disable_channel_postprocessing=True, verbose=2)
             callbacks.append(hsm_cb)
-            hsm_cb.on_epoch_end(-1)
-            hsm_it.close()
+
         else:
+            hsm_it = None
             hsm_cb = None
         if N_EPOCHS > 0:
             if WORKERS > 1:
@@ -260,18 +269,21 @@ else:
                 if shm is not None and shm[2] < 1:
                     print( f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
                 #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                enq = OrderedEnqueuerCF(train_it, shuffle=True, wait_for_me=hsm_cb.wait_for_me if hsm_cb is not None else None, use_shm=True)
+                enq = OrderedEnqueuerCF(train_it, shuffle=True, wait_for_me=hsm_cb.wait_for_me_hsm if hsm_cb is not None else None, use_shm=True)
                 enq.start(workers=WORKERS, max_queue_size=max(2, min(STEP_NUMBER, WORKERS)))
                 gen = enq.get()
             else:
                 gen = train_it
-            print("start training... ", flush=True)
+            if hsm_cb is not None:
+                hsm_cb.initialize()
             model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
             if WORKERS > 1:
                 print("stopping enqueuer...", flush=True)
                 enq.stop()
             print("end of training", flush=True)
-        train_it.close()
+        train_it.close(force=True)
+        if hsm_cb is not None:
+            hsm_cb.close()
         # export model
         print("saving model...", flush=True)
         model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)

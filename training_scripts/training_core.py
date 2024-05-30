@@ -1,3 +1,4 @@
+import copy
 import json, os
 import subprocess
 from dataset_iterator import ConcatIterator
@@ -101,21 +102,34 @@ def should_load_dataset_in_shm(dataset, mode:str= "auto", min_free_shm_gb:float=
             mode = "true"
     return mode == "true"
 
-def get_iterator(config, init_iterator, **kwargs):
+def get_iterator(config, init_iterator, existing_iterator=None, **kwargs):
+    if existing_iterator is not None:
+        existing_iterator.open()
+        datasetIO_list = []
+        if isinstance(existing_iterator, ConcatIterator):
+            for it in existing_iterator.iterators:
+                datasetIO_list.append(it.datasetIO)
+                it.dataset = it.datasetIO  # so that multichannel iterator datasetIO is not closed when close is called
+        else:
+            datasetIO_list.append(existing_iterator.datasetIO)
+            existing_iterator.dataset = existing_iterator.datasetIO # so that multichannel iterator datasetIO is not closed when close is called
+    else:
+        datasetIO_list = None
     step_number = kwargs.pop("step_number", config["training_parameters"]["step_number"])
     shuffle = kwargs.pop("shuffle", True)
     input_shape = config["dataset_parameters"].get("input_shape", (512, 512))
     ensure_multiplicity(2, input_shape)
     concat = len(config["dataset_list"])>1
     weight_limit = config["dataset_parameters"].get("loss_weight_range", None)
-    for i, ds_conf in enumerate(config["dataset_list"]):
+    ds_list_conf = copy.deepcopy(config["dataset_list"]) # do not modify configuration
+    for i, ds_conf in enumerate(ds_list_conf):
         batch_size = config["dataset_parameters"]["batch_size"]
         tiling_parameters = ds_conf.get("tiling_parameters", None)
         if tiling_parameters is not None:
             tiling_parameters["tile_shape"] = input_shape
             n_tiles = tiling_parameters.get("n_tiles", -1)
             if n_tiles <= 0:
-                dataset = ds_conf["path"]
+                dataset = ds_conf["path"] if datasetIO_list is None else datasetIO_list[i]
                 channel_name = ds_conf.get("channel_name", "raw")
                 if is_list(channel_name):
                     channel_name = channel_name[0]
@@ -125,12 +139,14 @@ def get_iterator(config, init_iterator, **kwargs):
             else: # adjust batch size to match target batch size
                 assert batch_size % n_tiles == 0, f"Error at dataset {i} : batch_size = {batch_size} is not divisible by n_tiles = {n_tiles}"
                 ds_conf["batch_size"] = batch_size//n_tiles
-            print(f"dataset {i}: n_tiles={n_tiles} batch_size={batch_size}", flush=True)
+            if existing_iterator is None:
+                print(f"dataset {i}: n_tiles={n_tiles} batch_size={batch_size}", flush=True)
         if weight_limit is not None and "loss_weigh_range" not in ds_conf:
             ds_conf["loss_weigh_range"] = weight_limit
+
     iterator_list, concat_proportion = [], []
-    for ds_conf in config["dataset_list"]:
-        it = init_iterator(step_number=0 if concat else step_number, shuffle=shuffle, **ds_conf)
+    for i, ds_conf in enumerate(ds_list_conf):
+        it = init_iterator(step_number=0 if concat else step_number, shuffle=shuffle, dataset=None if datasetIO_list is None else datasetIO_list[i], **ds_conf)
         iterator_list.append(it)
         concat_proportion.append(ds_conf.get("concat_proportion", 1))
     if isinstance(iterator_list[0], (list, tuple)): # init function return several outputs
