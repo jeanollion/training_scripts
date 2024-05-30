@@ -1,6 +1,9 @@
 name: Sync gists
 
-on: push
+on:
+  push:
+    branches:
+      - master
 
 jobs:
   gist-sync:
