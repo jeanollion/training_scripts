@@ -7,6 +7,7 @@ import tensorflow as tf
 import h5py
 from importlib.metadata import version
 from dataset_iterator.image_data_generator import get_image_data_generator
+from dataset_iterator.datasetIO import MemoryIO
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 from dataset_iterator.keras_callbacks import EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
 from pix_mclass.utils import ensure_multiplicity
@@ -55,14 +56,17 @@ START_EPOCH = t_p.get("epoch_start", 0)
 print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; PixMClass version: {version('PixMClass')}")
 print(f"configuration file found. ")
 
-def init_iterator(step_number, shuffle, **ds_kwargs):
+def init_iterator(step_number, shuffle, dataset=None, **ds_kwargs):
     data_aug_params = ds_kwargs.get("data_augmentation", {})
     channel_names = ds_kwargs.get("channel_name", "raw")
     if not isinstance(channel_names, (list, tuple)):
         channel_names = [channel_names]
     classes_name = ds_kwargs.get("classes_name", "classes")
-    dataset = ds_kwargs["path"]
-    memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+    if dataset is None:
+        dataset = ds_kwargs["path"]
+        memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+    else:
+        memory_persistent = isinstance(dataset, MemoryIO)
     weights = get_class_weights(dataset, classes_name) # inverse frequency
     weight_limit = ds_kwargs.get("loss_weight_range", None)
     if weight_limit is not None:
@@ -195,9 +199,11 @@ else:
                 gen = train_it
             model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
             if WORKERS > 1:
+                print("stopping enqueuer", flush=True)
                 enq.stop()
-            print("training successful", flush=True)
+            print("end of training", flush=True)
         train_it.close()
         # export model
+        print("saving model...", flush=True)
         tf.saved_model.save(model, SAVED_MODEL_PATH)
         print("model saved", flush=True)

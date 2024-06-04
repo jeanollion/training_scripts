@@ -41,7 +41,7 @@ config = open_config_file(args.config_dir, args.test_data_augmentation)
 t_p = config["training_parameters"]
 model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
 load_model_filename = t_p["load_model_filename"] + (f"_{args.load_model_idx}" if args.load_model_idx is not None else "") if len(t_p.get("load_model_filename", "")) > 0 else None
-WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
+WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
 LOAD_WEIGHT_PATH = (os.path.join(args.config_dir, t_p["weight_dir"], load_model_filename) if len(t_p["weight_dir"]) > 0 else os.path.join(args.config_dir, load_model_filename)) if load_model_filename is not None else None
 LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], model_name ) if len(t_p["log_dir"])>0 else os.path.join(args.config_dir, model_name )
 SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
@@ -60,8 +60,8 @@ print(f"Script version: {__VERSION__}; dataset_iterator version: {version('datas
 print(f"configuration file found. ")
 
 # TEST VARIABLES TO ADD TO CONFIGURATION IF RELEVANT
-PREDICT_EDM_DERIVATIVES = True
-PREDICT_GCDM_DERIVATIVES = True
+PREDICT_EDM_DERIVATIVES = False
+PREDICT_GCDM_DERIVATIVES = False
 EDM_DERIVATIVE_LOSS = False
 GCDM_DERIVATIVE_LOSS = False
 
@@ -122,10 +122,11 @@ def init_model():
     arch_args["spatial_dimensions"] = input_shape
     arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
     model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, predict_edm_derivatives=PREDICT_EDM_DERIVATIVES, predict_gcdm_derivatives=PREDICT_GCDM_DERIVATIVES, edm_derivative_loss=EDM_DERIVATIVE_LOSS, gcdm_derivative_loss=GCDM_DERIVATIVE_LOSS)
-    if args.export_only:
+    if args.export_only or args.compute_metrics and os.path.exists(WEIGHT_PATH):
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
         model.load_weights(WEIGHT_PATH)
-    elif LOAD_WEIGHT_PATH is not None:
+        print(f"Weights loaded : {WEIGHT_PATH}", flush=True)
+    elif LOAD_WEIGHT_PATH is not None or args.compute_metrics:
         assert os.path.exists(LOAD_WEIGHT_PATH), f"weights {LOAD_WEIGHT_PATH} not found"
         if os.path.isdir(LOAD_WEIGHT_PATH):
             loaded_model = tf.keras.models.load_model(LOAD_WEIGHT_PATH)
@@ -269,11 +270,12 @@ else:
                 if shm is not None and shm[2] < 1:
                     print( f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
                 #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                enq = OrderedEnqueuerCF(train_it, shuffle=True, wait_for_me=hsm_cb.wait_for_me if hsm_cb is not None else None, use_shm=True)
+                enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=True)
+                if hsm_cb is not None:
+                    hsm_cb.set_enqueuer(enq)
                 enq.start(workers=WORKERS, max_queue_size=max(2, min(STEP_NUMBER, WORKERS)))
                 gen = enq.get()
-                if hsm_cb is not None:
-                    hsm_cb.set_enqueuer(enq, gen)
+
             else:
                 gen = train_it
             if hsm_cb is not None:
