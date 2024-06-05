@@ -255,6 +255,7 @@ else:
                 period = int(N_EPOCHS * period)
             center_scale = hard_sample_mining_param.get("center_scale", 4)
             start_from = hard_sample_mining_param.get("start_from_epoch", 0)
+            print("init hsm iterator...", flush=True)
             hsm_it = get_iterator(config, init_iterator, existing_iterator=train_it, step_number=0, shuffle=False) # needs to be a different iterator as iterator.return_central_only
             configure_metrics_iterator(hsm_it)
             hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), disable_channel_postprocessing=True, verbose=2)
@@ -270,7 +271,7 @@ else:
                 if shm is not None and shm[2] < 1:
                     print( f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
                 #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=True)
+                enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=False, use_shared_array=True)
                 if hsm_cb is not None:
                     hsm_cb.set_enqueuer(enq)
                 enq.start(workers=WORKERS, max_queue_size=max(2, min(STEP_NUMBER, WORKERS)))

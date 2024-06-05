@@ -1,5 +1,6 @@
 FROM jeanollion/training_dnn:tf-2.14.0
-RUN pip install --upgrade h5py==3.9.0
+RUN pip install SharedArray
+RUN pip install --upgrade h5py==3.11.0
 COPY dataset_iterator /dataset_iterator
 RUN pip install /dataset_iterator
 COPY distnet2d /distnet2d

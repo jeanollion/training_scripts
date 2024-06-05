@@ -8,4 +8,5 @@ RUN pip install scipy scikit-learn scikit-image tifffile imageio elasticdeform e
 RUN pip install numba
 RUN pip install scikit-fmm
 RUN pip install psutil
-RUN pip install --upgrade h5py==3.9.0
+RUN pip install SharedArray
+RUN pip install --upgrade h5py==3.11.0

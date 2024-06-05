@@ -6,6 +6,7 @@ from dataset_iterator.utils import transpose_list, is_null, ensure_multiplicity,
 from dataset_iterator.helpers import get_optimal_tiling
 from dataset_iterator.datasetIO import get_datasetIO, MemoryIO
 
+
 def merge_dicts(primary_dict, secondary_dict):
     result = {**secondary_dict, **primary_dict}
     for k, v in secondary_dict.items():
@@ -13,12 +14,14 @@ def merge_dicts(primary_dict, secondary_dict):
             result[k] = merge_dicts(primary_dict[k], secondary_dict[k])
     return result
 
+
 def set_to_iterator(iterator, function):
     if isinstance(iterator, ConcatIterator):
         for it in iterator.iterators:
             set_to_iterator(it, function)
     else:
         function(iterator)
+
 
 def open_config_file(config_dir:str, test:bool):
     name = "test_configuration.json" if test else "training_configuration.json"
@@ -72,6 +75,7 @@ def open_config_file(config_dir:str, test:bool):
             del ds["keyword"]
     return config
 
+
 def convert_bool(obj):
     if isinstance(obj, str):
         obj_lower = obj.lower()
@@ -86,6 +90,7 @@ def convert_bool(obj):
     if isinstance(obj, dict):
         return {convert_bool(key):convert_bool(value) for key, value in obj.items()}
     return obj
+
 
 def should_load_dataset_in_shm(dataset, mode:str= "auto", min_free_shm_gb:float=1, max_file_size_gb:float=16):
     if mode == "auto":
@@ -102,17 +107,18 @@ def should_load_dataset_in_shm(dataset, mode:str= "auto", min_free_shm_gb:float=
             mode = "true"
     return mode == "true"
 
+
 def get_iterator(config, init_iterator, existing_iterator=None, **kwargs):
     if existing_iterator is not None:
         existing_iterator.open()
         datasetIO_list = []
-        if isinstance(existing_iterator, ConcatIterator):
-            for it in existing_iterator.iterators:
+        it_list = existing_iterator.iterators if isinstance(existing_iterator, ConcatIterator) else [existing_iterator]
+        for it in it_list:
+            if it.memory_persistent:  # only share datasetIO if memory_persistent
                 datasetIO_list.append(it.datasetIO)
                 it.dataset = it.datasetIO  # so that multichannel iterator datasetIO is not closed when close is called
-        else:
-            datasetIO_list.append(existing_iterator.datasetIO)
-            existing_iterator.dataset = existing_iterator.datasetIO # so that multichannel iterator datasetIO is not closed when close is called
+            else:
+                datasetIO_list.append(None)
     else:
         datasetIO_list = None
     step_number = kwargs.pop("step_number", config["training_parameters"]["step_number"])
@@ -129,7 +135,7 @@ def get_iterator(config, init_iterator, existing_iterator=None, **kwargs):
             tiling_parameters["tile_shape"] = input_shape
             n_tiles = tiling_parameters.get("n_tiles", -1)
             if n_tiles <= 0:
-                dataset = ds_conf["path"] if datasetIO_list is None else datasetIO_list[i]
+                dataset = ds_conf["path"] if datasetIO_list is None or datasetIO_list[i]is None else datasetIO_list[i]
                 channel_name = ds_conf.get("channel_name", "raw")
                 if is_list(channel_name):
                     channel_name = channel_name[0]
@@ -165,6 +171,7 @@ def get_iterator(config, init_iterator, existing_iterator=None, **kwargs):
         all_outputs[0] = it
         return all_outputs
 
+
 def chain_pp_fun(pp_fun_list):
     if len(pp_fun_list)==0:
         return None
@@ -176,12 +183,14 @@ def chain_pp_fun(pp_fun_list):
                 f(batch_by_channel)
         return fun
 
+
 def get_shm_nfiles(shm_dir:str="/dev/shm"):
     command = subprocess.run(["ls", shm_dir], capture_output=True, text=True)
     if command.returncode != 0:
         return "could not check shm files"
     else:
         return command.stdout
+
 
 def get_shm_info(verbose:int=1):
     command = subprocess.run(["df", "-P", "-k"], capture_output=True, text=True)
