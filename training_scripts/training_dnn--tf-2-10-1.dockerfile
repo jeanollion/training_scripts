@@ -9,4 +9,5 @@ RUN pip install numba
 RUN pip install scikit-fmm
 RUN pip install psutil
 RUN pip install SharedArray
+RUN pip install dill
 RUN pip install --upgrade h5py==3.11.0

@@ -20,7 +20,7 @@ from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, get_shm_info, get_shm_nfiles
 
-__VERSION__ = '1.0.4'
+__VERSION__ = '1.1.0'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
@@ -273,7 +273,7 @@ if __name__ == "__main__":
                     if shm is not None and shm[2] < 1:
                         print( f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
                     #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                    enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=False, use_shared_array=True)
+                    enq = OrderedEnqueuerCF(train_it, shuffle=True)
                     if hsm_cb is not None:
                         hsm_cb.set_enqueuer(enq)
                     enq.start(workers=WORKERS, max_queue_size=max(2, min(STEP_NUMBER, WORKERS)))

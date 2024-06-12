@@ -16,7 +16,7 @@ from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_cro
 import pix_mclass.training as pmt
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info
 
-__VERSION__ = "1.0.1"
+__VERSION__ = "1.1.0"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -194,7 +194,7 @@ if __name__ == "__main__":
                     if shm is not None and shm[2] < 1:
                         print(f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", flush=True)
                     #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                    enq = OrderedEnqueuerCF(train_it, shuffle=True, use_shm=True)
+                    enq = OrderedEnqueuerCF(train_it, shuffle=True)
                     enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
                     gen = enq.get()
                 else:

@@ -102,7 +102,7 @@ def should_load_dataset_in_shm(dataset, mode:str= "auto", min_free_shm_gb:float=
             shm_avail = shared_mem_info[2]
             remain = shm_avail - file_size_gb * 2 # estimation of deflate factor..
             remain_ok = min_free_shm_gb <= remain
-            print(f"load dataset in memory test: available shm: {shm_avail:.2f}G / {shm_total:.2f}G file size: {file_size_gb:.2f} load in memory: {remain_ok}")
+            #print(f"load dataset in memory test: available shm: {shm_avail:.2f}G / {shm_total:.2f}G file size: {file_size_gb:.2f} load in memory: {remain_ok}")
         if remain_ok and file_size_gb < max_file_size_gb:
             mode = "true"
     return mode == "true"
