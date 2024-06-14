@@ -186,6 +186,7 @@ if __name__ == "__main__":
                 eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
                 callbacks.append(eps_schedule)
             print("start training...", flush=True)
+            N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0:
                 train_it.open()
                 if WORKERS > 1:
@@ -204,6 +205,8 @@ if __name__ == "__main__":
                     print("stopping enqueuer", flush=True)
                     enq.stop()
                 print("end of training", flush=True)
+            elif START_EPOCH > 0:
+                print("Start Epoch is greater than Epoch number.", flush=True)
             train_it.close()
             # export model
             print("saving model...", flush=True)

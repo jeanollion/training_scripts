@@ -266,6 +266,8 @@ if __name__ == "__main__":
             else:
                 hsm_it = None
                 hsm_cb = None
+
+            N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0:
                 if WORKERS > 1:
                     # check available shm:
@@ -288,6 +290,8 @@ if __name__ == "__main__":
                     print("stopping enqueuer...", flush=True)
                     enq.stop()
                 print("end of training", flush=True)
+            elif START_EPOCH > 0:
+                print("Start Epoch is greater than Epoch number.", flush=True)
             train_it.close(force=True)
             if hsm_cb is not None:
                 hsm_cb.close()

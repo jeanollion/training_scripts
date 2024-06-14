@@ -234,6 +234,8 @@ if __name__ == "__main__":
             if EPSILON_RANGE[1]!=EPSILON_RANGE[0]:
                 eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
                 callbacks.append(eps_schedule)
+
+            N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0:
                 train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=True)
                 if WORKERS > 1:
@@ -252,7 +254,9 @@ if __name__ == "__main__":
                 if WORKERS > 1:
                     enq.stop()
                 print("training successful", flush=True)
-                train_it.close()
+            elif START_EPOCH > 0:
+                print("Start Epoch is greater than Epoch number.", flush=True)
+            train_it.close()
             # export model
             tf.saved_model.save(model, SAVED_MODEL_PATH)
             print("model saved", flush=True)
