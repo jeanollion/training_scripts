@@ -57,15 +57,11 @@ if __name__ == "__main__":
     WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
     SHUFFLE = not args.test_data_augmentation
     START_EPOCH = t_p.get("start_epoch", 0)
-
-    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
-    print(f"configuration file found. ")
-
-    PREDICT_EDM_DERIVATIVES = False
-    PREDICT_GCDM_DERIVATIVES = False
     EDM_DERIVATIVE_LOSS = True
     GCDM_DERIVATIVE_LOSS = True
-    print(f"EDM derloss: {EDM_DERIVATIVE_LOSS}, GCDM derloss: {GCDM_DERIVATIVE_LOSS}", flush=True)
+    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
+    print(f"configuration file found. ")
+    #print(f"EDM derloss: {EDM_DERIVATIVE_LOSS}, GCDM derloss: {GCDM_DERIVATIVE_LOSS}", flush=True)
 
     def init_iterator(step_number, shuffle, dataset=None, **ds_kwargs):
         data_aug_params = ds_kwargs.get("data_augmentation", {})
@@ -109,7 +105,7 @@ if __name__ == "__main__":
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                                channels_postprocessing_function=pp_fun, verbose=False and args.test_data_augmentation, memory_persistent=memory_persistent)
         return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_kwargs.get("keyword", None),
-                            batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=EDM_DERIVATIVE_LOSS or PREDICT_EDM_DERIVATIVES,
+                            batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=EDM_DERIVATIVE_LOSS,
                             aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=shuffle,
                             **iterator_params)
 
@@ -122,7 +118,7 @@ if __name__ == "__main__":
         input_shape = [None if s <= 0 else s for s in shape]
         arch_args["spatial_dimensions"] = input_shape
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
-        model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, predict_edm_derivatives=PREDICT_EDM_DERIVATIVES, predict_gcdm_derivatives=PREDICT_GCDM_DERIVATIVES, edm_derivative_loss=EDM_DERIVATIVE_LOSS, gcdm_derivative_loss=GCDM_DERIVATIVE_LOSS)
+        model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=EDM_DERIVATIVE_LOSS, gcdm_derivative_loss=GCDM_DERIVATIVE_LOSS)
         if args.export_only or args.compute_metrics and os.path.exists(WEIGHT_PATH):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
