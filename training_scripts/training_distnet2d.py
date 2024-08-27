@@ -61,7 +61,7 @@ if __name__ == "__main__":
     GCDM_DERIVATIVE_LOSS = True
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
     print(f"configuration file found. ")
-    #print(f"EDM derloss: {EDM_DERIVATIVE_LOSS}, GCDM derloss: {GCDM_DERIVATIVE_LOSS}", flush=True)
+    # print(f"EDM derloss: {EDM_DERIVATIVE_LOSS}, GCDM derloss: {GCDM_DERIVATIVE_LOSS}", flush=True)
 
     def init_iterator(step_number, shuffle, dataset=None, **ds_kwargs):
         data_aug_params = ds_kwargs.get("data_augmentation", {})
