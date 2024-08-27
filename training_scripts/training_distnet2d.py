@@ -20,7 +20,7 @@ from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, get_shm_info, get_shm_nfiles
 
-__VERSION__ = '1.1.0'
+__VERSION__ = '1.1.1'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
@@ -61,12 +61,11 @@ if __name__ == "__main__":
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
     print(f"configuration file found. ")
 
-    # TEST VARIABLES TO ADD TO CONFIGURATION IF RELEVANT
     PREDICT_EDM_DERIVATIVES = False
     PREDICT_GCDM_DERIVATIVES = False
-    EDM_DERIVATIVE_LOSS = False
-    GCDM_DERIVATIVE_LOSS = False
-
+    EDM_DERIVATIVE_LOSS = True
+    GCDM_DERIVATIVE_LOSS = True
+    print(f"EDM derloss: {EDM_DERIVATIVE_LOSS}, GCDM derloss: {GCDM_DERIVATIVE_LOSS}", flush=True)
 
     def init_iterator(step_number, shuffle, dataset=None, **ds_kwargs):
         data_aug_params = ds_kwargs.get("data_augmentation", {})
