@@ -58,19 +58,19 @@ if __name__ == "__main__":
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; PixMClass version: {version('PixMClass')}")
     print(f"configuration file found. ")
 
-    def init_iterator(step_number, shuffle, dataset=None, **ds_kwargs):
-        data_aug_params = ds_kwargs.get("data_augmentation", {})
-        channel_names = ds_kwargs.get("channel_name", "raw")
+    def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
+        data_aug_params = ds_conf.get("data_augmentation", {})
+        channel_names = ds_conf.get("channel_name", "raw")
         if not isinstance(channel_names, (list, tuple)):
             channel_names = [channel_names]
-        classes_name = ds_kwargs.get("classes_name", "classes")
+        classes_name = ds_conf.get("classes_name", "classes")
         if dataset is None:
-            dataset = ds_kwargs["path"]
-            memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+            dataset = ds_conf["path"]
+            memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
         else:
             memory_persistent = isinstance(dataset, MemoryIO)
         weights = get_class_weights(dataset, classes_name) # inverse frequency
-        weight_limit = ds_kwargs.get("loss_weight_range", None)
+        weight_limit = ds_conf.get("loss_weight_range", None)
         if weight_limit is not None:
             assert len(weight_limit) == 2, "Weight limit should be of length 2"
             weights = np.minimum(weights, np.max(weight_limit))
@@ -91,14 +91,14 @@ if __name__ == "__main__":
         else:
             illumination_generator = None
 
-        batch_size = ds_kwargs["batch_size"]
-        tiling_parameters = ds_kwargs.get("tiling_parameters", None)
+        batch_size = ds_conf["batch_size"]
+        tiling_parameters = ds_conf.get("tiling_parameters", None)
         return pmt.get_iterator(dataset, memory_persistent=memory_persistent, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
-            input_channel_keywords=channel_names, class_keyword=classes_name,
-            train_group_keyword=ds_kwargs.get("keyword", None),
-            tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number, dtype="float32", shuffle=shuffle,
-            elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
-            ), weights
+                                input_channel_keywords=channel_names, class_keyword=classes_name,
+                                train_group_keyword=ds_conf.get("keyword", None),
+                                tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number, dtype="float32", shuffle=kwargs.get("shuffle", True),
+                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
+                                ), weights
 
     def init_model(n_classes):
         model = get_unet(n_classes, skip_omit=0)

@@ -69,19 +69,19 @@ if __name__ == "__main__":
     print(f"configuration file found. ")
 
 
-    def init_iterator(step_number, shuffle, dataset=None, **ds_kwargs):
+    def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
         timelapse = config["model_architecture"].get("timelapse", False)
         channel_number = config["model_architecture"].get("channel_number", 1)
-        data_aug_params = ds_kwargs.get("data_augmentation", {})
-        channel_name = ds_kwargs.get("channel_name", "raw")
+        data_aug_params = ds_conf.get("data_augmentation", {})
+        channel_name = ds_conf.get("channel_name", "raw")
         if dataset is None:
-            dataset = ds_kwargs["path"]
-            memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get( "shared_memory", "auto"))
+            dataset = ds_conf["path"]
+            memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
         else:
             memory_persistent = isinstance(dataset, MemoryIO)
-        batch_size = ds_kwargs["batch_size"]
-        if "tiling_parameters" in ds_kwargs:
-            tiling_parameters = ds_kwargs["tiling_parameters"]
+        batch_size = ds_conf["batch_size"]
+        if "tiling_parameters" in ds_conf:
+            tiling_parameters = ds_conf["tiling_parameters"]
             extract_tiles_fun = extract_tile_random_zoom_function(**tiling_parameters)
         else:
             extract_tiles_fun = None
@@ -124,13 +124,13 @@ if __name__ == "__main__":
                 batch_res = np.stack(images, 0)
                 return np.expand_dims(batch_res, -1)
             return result_fun
-        exclude_void = ds_kwargs.get("exclude_empty_frames", False)
-        iterator_params = dict(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_kwargs.get("keyword", None),
+        exclude_void = ds_conf.get("exclude_empty_frames", False)
+        iterator_params = dict(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_conf.get("keyword", None),
                                input_channels=[0],
                                output_channels=[1, 1],
                                mask_channels=[1],
                                batch_size=batch_size, step_number=step_number,
-                               extract_tile_function=extract_tiles_fun, shuffle=shuffle,
+                               extract_tile_function=extract_tiles_fun, shuffle=kwargs.get("shuffle", True),
                                image_data_generators=[data_generator, mask_generator],
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                                channels_postprocessing_function=pp_fun,

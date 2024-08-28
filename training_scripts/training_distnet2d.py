@@ -63,19 +63,19 @@ if __name__ == "__main__":
     print(f"configuration file found. ")
     # print(f"EDM derloss: {EDM_DERIVATIVE_LOSS}, GCDM derloss: {GCDM_DERIVATIVE_LOSS}", flush=True)
 
-    def init_iterator(step_number, shuffle, dataset=None, **ds_kwargs):
-        data_aug_params = ds_kwargs.get("data_augmentation", {})
-        dataset_features = ds_kwargs.get("dataset_features", {})
+    def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
+        data_aug_params = ds_conf.get("data_augmentation", {})
+        dataset_features = ds_conf.get("dataset_features", {})
         arch_params = config["model_architecture"]
-        channel_name = ds_kwargs.get("channel_name", "raw")
+        channel_name = ds_conf.get("channel_name", "raw")
         if dataset is None:
-            dataset = ds_kwargs["path"]
-            memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+            dataset = ds_conf["path"]
+            memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
         else:
             memory_persistent = isinstance(dataset, MemoryIO)
-        batch_size = ds_kwargs["batch_size"]
-        if "tiling_parameters" in ds_kwargs:
-            tiling_parameters = ds_kwargs["tiling_parameters"]
+        batch_size = ds_conf["batch_size"]
+        if "tiling_parameters" in ds_conf:
+            tiling_parameters = ds_conf["tiling_parameters"]
             extract_tiles_fun = extract_tile_random_zoom_function(**tiling_parameters)
         else:
             extract_tiles_fun = None
@@ -104,9 +104,9 @@ if __name__ == "__main__":
                                image_data_generators=[data_generator, mask_generator],
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                                channels_postprocessing_function=pp_fun, verbose=False and args.test_data_augmentation, memory_persistent=memory_persistent)
-        return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_kwargs.get("keyword", None),
+        return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_conf.get("keyword", None),
                             batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=EDM_DERIVATIVE_LOSS,
-                            aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=shuffle,
+                            aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
                             **iterator_params)
 
 

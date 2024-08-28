@@ -107,8 +107,9 @@ def should_load_dataset_in_shm(dataset, mode:str= "auto", min_free_shm_gb:float=
             mode = "true"
     return mode == "true"
 
-
-def get_iterator(config, init_iterator, existing_iterator=None, **kwargs):
+DATASET_TYPES = ["TRAIN", "TEST", "EVAL"]
+def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TRAIN", **kwargs):
+    assert dataset_type in DATASET_TYPES, f"type must be in {DATASET_TYPES}"
     if existing_iterator is not None:
         existing_iterator.open()
         datasetIO_list = []
@@ -122,39 +123,48 @@ def get_iterator(config, init_iterator, existing_iterator=None, **kwargs):
     else:
         datasetIO_list = None
     step_number = kwargs.pop("step_number", config["training_parameters"]["step_number"])
-    shuffle = kwargs.pop("shuffle", True)
-    input_shape = config["dataset_parameters"].get("input_shape", (512, 512))
-    ensure_multiplicity(2, input_shape)
+    kwargs["dataset_type"] = dataset_type
+    input_shape = config["dataset_parameters"].get("input_shape", None)
+    if input_shape is not None:
+        ensure_multiplicity(2, input_shape)
     concat = len(config["dataset_list"])>1
     weight_limit = config["dataset_parameters"].get("loss_weight_range", None)
     ds_list_conf = copy.deepcopy(config["dataset_list"]) # do not modify configuration
-    for i, ds_conf in enumerate(ds_list_conf):
-        batch_size = config["dataset_parameters"]["batch_size"]
-        tiling_parameters = ds_conf.get("tiling_parameters", None)
-        if tiling_parameters is not None:
-            tiling_parameters["tile_shape"] = input_shape
-            n_tiles = tiling_parameters.get("n_tiles", -1)
-            if n_tiles <= 0:
-                dataset = ds_conf["path"] if datasetIO_list is None or datasetIO_list[i]is None else datasetIO_list[i]
-                channel_name = ds_conf.get("channel_name", "raw")
-                if is_list(channel_name):
-                    channel_name = channel_name[0]
-                batch_size, n_tiles = get_optimal_tiling(dataset, channel_name, batch_size, input_shape, group_keyword=ds_conf.get("keyword", None), tile_overlap_fraction=tiling_parameters.pop("tile_overlap_fraction", 1. / 4))
-                tiling_parameters["n_tiles"] = n_tiles
-                ds_conf["batch_size"] = batch_size
-            else: # adjust batch size to match target batch size
-                assert batch_size % n_tiles == 0, f"Error at dataset {i} : batch_size = {batch_size} is not divisible by n_tiles = {n_tiles}"
-                ds_conf["batch_size"] = batch_size//n_tiles
-            if existing_iterator is None:
-                print(f"dataset {i}: n_tiles={n_tiles} batch_size={batch_size}", flush=True)
-        if weight_limit is not None and "loss_weigh_range" not in ds_conf:
-            ds_conf["loss_weigh_range"] = weight_limit
-
+    i=0
+    for ds_conf in ds_list_conf:
+        if ds_conf.get("type", "TRAIN") == dataset_type:
+            batch_size = config["dataset_parameters"]["batch_size"]
+            tiling_parameters = ds_conf.get("tiling_parameters", None)
+            if tiling_parameters is not None:
+                assert input_shape is not None, "when tiling parameters are provided, input_shape must be provided"
+                tiling_parameters["tile_shape"] = input_shape
+                n_tiles = tiling_parameters.get("n_tiles", -1)
+                if n_tiles <= 0:
+                    dataset = ds_conf["path"] if datasetIO_list is None or datasetIO_list[i]is None else datasetIO_list[i]
+                    channel_name = ds_conf.get("channel_name", "raw")
+                    if is_list(channel_name):
+                        channel_name = channel_name[0]
+                    batch_size, n_tiles = get_optimal_tiling(dataset, channel_name, batch_size, input_shape, group_keyword=ds_conf.get("keyword", None), tile_overlap_fraction=tiling_parameters.pop("tile_overlap_fraction", 1. / 4))
+                    tiling_parameters["n_tiles"] = n_tiles
+                    ds_conf["batch_size"] = batch_size
+                else: # adjust batch size to match target batch size
+                    assert batch_size % n_tiles == 0, f"Error at dataset {i} : batch_size = {batch_size} is not divisible by n_tiles = {n_tiles}"
+                    ds_conf["batch_size"] = batch_size//n_tiles
+                if existing_iterator is None:
+                    print(f"dataset {i}: n_tiles={n_tiles} batch_size={batch_size}", flush=True)
+            if weight_limit is not None and "loss_weigh_range" not in ds_conf:
+                ds_conf["loss_weigh_range"] = weight_limit
+            i+=1
+    if i==0: # no dataset from this dataset_type
+        return None
+    i=0
     iterator_list, concat_proportion = [], []
-    for i, ds_conf in enumerate(ds_list_conf):
-        it = init_iterator(step_number=0 if concat else step_number, shuffle=shuffle, dataset=None if datasetIO_list is None else datasetIO_list[i], **ds_conf)
-        iterator_list.append(it)
-        concat_proportion.append(ds_conf.get("concat_proportion", 1))
+    for ds_conf in ds_list_conf:
+        if ds_conf.get("type", "TRAIN") == dataset_type:
+            it = init_iterator(ds_conf, step_number=0 if concat else step_number, dataset=None if datasetIO_list is None else datasetIO_list[i], **kwargs)
+            iterator_list.append(it)
+            concat_proportion.append(ds_conf.get("concat_proportion", 1))
+            i += 1
     if isinstance(iterator_list[0], (list, tuple)): # init function return several outputs
         iterator_list = transpose_list(iterator_list)
         all_outputs = iterator_list
@@ -162,7 +172,7 @@ def get_iterator(config, init_iterator, existing_iterator=None, **kwargs):
     else:
         all_outputs = None
     if len(iterator_list) > 1:
-        it = ConcatIterator(iterator_list, proportion=concat_proportion, batch_size=config.get("concat_batch_size", 1), step_number=step_number, **kwargs)
+        it = ConcatIterator(iterator_list, proportion=concat_proportion, batch_size=config.get("concat_batch_size", 1), step_number=step_number)
     else:
         it = iterator_list[0]
     if all_outputs is None:
