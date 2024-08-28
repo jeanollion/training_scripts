@@ -48,3 +48,13 @@ jobs:
           gist_title: training_pixmclass.py
           gist_description: Core script for DL training
           github_file: training_scripts/training_pixmclass.py
+      - name: update training blissed
+        uses: popsiclestick/gist-sync-action@v1.2.0
+        id: sync-blissed
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gist_url: https://gist.github.com/jeanollion/8ca51fc1449749b73d5064c9d28e53f4
+          gist_title: training_blissed.py
+          gist_description:  Training script for blissed (Blind Self Supervised Denoising)
+          github_file: training_scripts/training_blissed.py
+
