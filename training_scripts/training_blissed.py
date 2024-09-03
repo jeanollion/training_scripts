@@ -180,10 +180,12 @@ if __name__ == "__main__":
         print(f"init iterator...", flush=True)
         # compute scaling
         CENTER_SCALE = get_dataset_center_scale(CONFIG, dataset_type="TRAIN")
-        print(f"Intensity normalization: center={CENTER_SCALE[0]} scale={CENTER_SCALE[1]}")
         if CENTER_SCALE is None and args.compute_metrics:
             CENTER_SCALE = get_dataset_center_scale(CONFIG, dataset_type="EVAL")
-
+        print(f"Intensity normalization: center={CENTER_SCALE[0]} scale={CENTER_SCALE[1]}")
+        scaling_file = os.path.join(args.config_dir, "train_scaling_parameters.json")
+        with open(scaling_file, 'w') as f:
+            f.write(f'{{"center":{CENTER_SCALE[0]}, "scale":{CENTER_SCALE[1]}}}')
         test_it = None
         if args.test_data_augmentation:
             train_it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, center_scale=CENTER_SCALE)
