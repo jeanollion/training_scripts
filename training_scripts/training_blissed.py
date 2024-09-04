@@ -41,11 +41,11 @@ if __name__ == "__main__":
     LOAD_WEIGHT_PATH = (os.path.join(args.config_dir, t_p["weight_dir"], load_model_filename) if len(t_p["weight_dir"]) > 0 else os.path.join(args.config_dir, load_model_filename)) if load_model_filename is not None else None
     LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], MODEL_NAME) if len(t_p["log_dir"]) > 0 else os.path.join(args.config_dir, MODEL_NAME)
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, MODEL_NAME)
-    N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
+    N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 800)
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
-    MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
-    EPSILON_RANGE = t_p.get("epsilon_range", [1e-7, 1e-7])
+    MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 1e-6)
+    EPSILON_RANGE = t_p.get("epsilon_range", [0.1, 0.2])
     EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
     WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
     SHUFFLE = not args.test_data_augmentation
@@ -115,7 +115,7 @@ if __name__ == "__main__":
                                                 center_scale=center_scale,
                                                 n_frames=n_frames,
                                                 mask=not RENOISE_MODE,
-                                                min_step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
+                                                step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
             if RENOISE_MODE:
                 collapse_test_iterator = get_collapse_test_iterator(dataset, channel_keyword=channel_name, step_number=2, group_keyword=group_keyword, n_frames=n_frames)
                 return train_iterator, collapse_test_iterator
@@ -247,7 +247,7 @@ if __name__ == "__main__":
             N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0: # perform training
                 train_data = train_denoiser(denoiser, train_it,
-                                            n_epochs=N_EPOCHS, start_epoch=START_EPOCH, max_step_number = STEP_NUMBER,
+                                            n_epochs=N_EPOCHS, start_epoch=START_EPOCH, step_number = STEP_NUMBER,
                                             n_epochs_masked_training=0,
                                             training_mode=1 if RENOISE_MODE else 0,
                                             learning_rate=LR, learning_rate_min=MIN_LR, epsilon=EPSILON_RANGE[1], epsilon_min=EPSILON_RANGE[0],

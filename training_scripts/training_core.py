@@ -127,7 +127,6 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
     input_shape = config["dataset_parameters"].get("input_shape", None)
     if input_shape is not None:
         ensure_multiplicity(2, input_shape)
-    concat = len(config["dataset_list"])>1
     weight_limit = config["dataset_parameters"].get("loss_weight_range", None)
     ds_list_conf = copy.deepcopy(config["dataset_list"]) # do not modify configuration
     i=0
@@ -157,6 +156,7 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
             i+=1
     if i==0: # no dataset from this dataset_type
         return None
+    concat = i > 1
     i=0
     iterator_list, concat_proportion = [], []
     for ds_conf in ds_list_conf:
@@ -171,7 +171,7 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
         iterator_list = iterator_list[0]
     else:
         all_outputs = None
-    if len(iterator_list) > 1:
+    if concat:
         it = ConcatIterator(iterator_list, proportion=concat_proportion, batch_size=config.get("concat_batch_size", 1), step_number=step_number)
     else:
         it = iterator_list[0]
