@@ -65,11 +65,14 @@ if __name__ == "__main__":
     def weighted_avg(a_b_count):
         if len(a_b_count) == 0:
             return None
-        a_b_count = np.array(a_b_count)
-        a_b_count[:, 2] = a_b_count[:, 2] / np.sum(a_b_count[:, 2])
-        a_b_count[:, 0:1] = a_b_count[:, 0:1] * a_b_count[:, 2]
-        a_b_count = np.sum(a_b_count, axis=0)
-        return a_b_count[0] / a_b_count[2], a_b_count[1] / a_b_count[2]
+        elif len(a_b_count) == 1:
+            return a_b_count[0][0], a_b_count[0][1]
+        else:
+            a_b_count = np.array(a_b_count)
+            a_b_count[:, 2] = a_b_count[:, 2] / np.sum(a_b_count[:, 2])
+            a_b_count[:, 0:1] = a_b_count[:, 0:1] * a_b_count[:, 2]
+            a_b_count = np.sum(a_b_count, axis=0)
+            return a_b_count[0] / a_b_count[2], a_b_count[1] / a_b_count[2]
 
     def get_dataset_center_scale(config, dataset_type="TRAIN"):
         scaling_parameters = config["dataset_parameters"].get("scaling_parameters", {"mode":"MODE_PERCENTILE", "percentile":95})
