@@ -123,8 +123,9 @@ if __name__ == "__main__":
                 return train_iterator
 
         elif dataset_type == "EVAL":
-            # TODO: get contraction factor from model parameters
-            return get_eval_iterator(dataset, noisy_channel=channel_name, group_keyword=group_keyword, n_frames=n_frames)
+            contraction_factor = 2**CONFIG["model_architecture"].get("n_downsampling", 3)
+            return get_eval_iterator(dataset, noisy_channel=channel_name, group_keyword=group_keyword, n_frames=n_frames, contraction_factor=contraction_factor)
+
 
     def init_model():
         arch_args = copy.deepcopy(CONFIG["model_architecture"])
