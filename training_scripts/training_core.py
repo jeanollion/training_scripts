@@ -148,7 +148,8 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
                     ds_conf["batch_size"] = batch_size
                 else: # adjust batch size to match target batch size
                     assert batch_size % n_tiles == 0, f"Error at dataset {i} : batch_size = {batch_size} is not divisible by n_tiles = {n_tiles}"
-                    ds_conf["batch_size"] = batch_size//n_tiles
+                    batch_size = batch_size//n_tiles
+                    ds_conf["batch_size"] = batch_size
                 if existing_iterator is None:
                     print(f"dataset {i}: n_tiles={n_tiles} batch_size={batch_size}", flush=True)
             if weight_limit is not None and "loss_weigh_range" not in ds_conf:
