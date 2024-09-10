@@ -24,7 +24,6 @@ __VERSION__ = '1.1.1'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
-parser.add_argument("--load_model_idx", type=int, help="index of model to load weights from")
 parser.add_argument("--export_only", action="store_true", help="skip model training")
 parser.add_argument("--test_data_augmentation", action="store_true", help="generate and store example of augmented data")
 parser.add_argument("--compute_metrics", action="store_true", help="compute loss")
@@ -42,9 +41,8 @@ if __name__ == "__main__":
     config = open_config_file(args.config_dir, args.test_data_augmentation)
     t_p = config["training_parameters"]
     model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
-    load_model_filename = t_p["load_model_filename"] + (f"_{args.load_model_idx}" if args.load_model_idx is not None else "") if len(t_p.get("load_model_filename", "")) > 0 else None
     WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
-    LOAD_WEIGHT_PATH = (os.path.join(args.config_dir, t_p["weight_dir"], load_model_filename) if len(t_p["weight_dir"]) > 0 else os.path.join(args.config_dir, load_model_filename)) if load_model_filename is not None else None
+    LOAD_WEIGHT_PATH = t_p["load_model_file"] if len(t_p.get("load_model_file", "")) > 0 else None
     LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], model_name ) if len(t_p["log_dir"])>0 else os.path.join(args.config_dir, model_name )
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)

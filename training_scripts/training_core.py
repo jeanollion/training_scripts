@@ -49,6 +49,10 @@ def open_config_file(config_dir:str, test:bool):
     config["training_parameters"]["log_dir"] = log_path
     if not os.path.exists(log_path):
         os.mkdir(log_path)
+    if "load_model_file" in config["training_parameters"]:
+        if not os.path.isabs(config["training_parameters"]["load_model_file"]):
+            config["training_parameters"]["load_model_file"] = os.path.join(config_dir, config["training_parameters"]["load_model_file"])
+        assert os.path.exists(config["training_parameters"]["load_model_file"]), f'load model file not found in {config["training_parameters"]["load_model_file"]}'
     if test:
         test_param = config.get("test_data_augmentation_parameters", {})
         if "batch_size" in test_param:

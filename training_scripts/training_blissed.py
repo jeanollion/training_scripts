@@ -9,6 +9,7 @@ from importlib.metadata import version
 from dataset_iterator.datasetIO import MemoryIO
 from dataset_iterator import extract_tile_random_zoom_function
 from dataset_iterator.utils import transpose_list, is_list
+from dataset_iterator.helpers import get_channel_number
 from ssnb_denoising.datasets import get_center_scale
 from ssnb_denoising.training import train_denoiser, get_train_iterator, get_collapse_test_iterator
 from ssnb_denoising.datasets.evaluation import get_eval_iterator
@@ -19,7 +20,6 @@ __VERSION__ = '1.0.0'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
-parser.add_argument("--load_model_idx", type=int, help="index of model to load weights from")
 parser.add_argument("--export_only", action="store_true", help="skip model training")
 parser.add_argument("--test_data_augmentation", action="store_true", help="generate and store example of augmented data")
 parser.add_argument("--compute_metrics", action="store_true", help="compute loss")
@@ -36,9 +36,8 @@ if __name__ == "__main__":
     CONFIG = open_config_file(args.config_dir, args.test_data_augmentation)
     t_p = CONFIG["training_parameters"]
     MODEL_NAME = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
-    load_model_filename = t_p["load_model_filename"] + (f"_{args.load_model_idx}" if args.load_model_idx is not None else "") if len(t_p.get("load_model_filename", "")) > 0 else None
     WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"], MODEL_NAME + ".h5") if len(t_p["weight_dir"]) > 0 else os.path.join(args.config_dir, MODEL_NAME + ".h5")
-    LOAD_WEIGHT_PATH = (os.path.join(args.config_dir, t_p["weight_dir"], load_model_filename) if len(t_p["weight_dir"]) > 0 else os.path.join(args.config_dir, load_model_filename)) if load_model_filename is not None else None
+    LOAD_WEIGHT_PATH = t_p["load_model_file"] if len(t_p.get("load_model_file", "")) > 0 else None
     LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], MODEL_NAME) if len(t_p["log_dir"]) > 0 else os.path.join(args.config_dir, MODEL_NAME)
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, MODEL_NAME)
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 800)
@@ -73,6 +72,18 @@ if __name__ == "__main__":
             a_b_count[:, 0:1] = a_b_count[:, 0:1] * a_b_count[:, 2]
             a_b_count = np.sum(a_b_count, axis=0)
             return a_b_count[0] / a_b_count[2], a_b_count[1] / a_b_count[2]
+
+    def is_color_dataset(config):
+        color = None
+        for ds_conf in config["dataset_list"]:
+            n_channels = get_channel_number(ds_conf["path"], ds_conf.get("channel_name", "raw"), ds_conf.get("keyword", None), n_spatial_dims=2)
+            if n_channels not in [1, 3]:
+                raise ValueError(f"dataset has {n_channels} channels but have either 1 or 3 (color)")
+            if color is None:
+                color = n_channels == 3
+            elif color != (n_channels == 3):
+                raise ValueError(f"at least one dataset has color images and one has grayscale images")
+        return color
 
     def get_dataset_center_scale(config, dataset_type="TRAIN"):
         scaling_parameters = config["dataset_parameters"].get("scaling_parameters", {"mode":"MODE_PERCENTILE", "percentile":95})
@@ -109,12 +120,15 @@ if __name__ == "__main__":
             tiling_parameters["augmentation_rotate"] = NOISE_CORRELATION_RANGE is None
             tiling_parameters["perform_augmentation"] = True
             tiling_parameters["random_stride"] = True
+            tiling_parameters["zoom_range"] = [1, 1]
+            tiling_parameters["aspect_ratio_range"] = [1, 1]
+            tiling_parameters["zoom_probability"] = 0
             extract_tiles_fun = extract_tile_random_zoom_function(**tiling_parameters)
             train_iterator = get_train_iterator(dataset, extract_tiles_fun=extract_tiles_fun,
                                                 channel_keyword=channel_name, train_group_keyword=group_keyword,
                                                 center_scale=center_scale,
                                                 n_frames=n_frames,
-                                                mask=not RENOISE_MODE,
+                                                mask=True, # not RENOISE_MODE
                                                 step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
             if RENOISE_MODE:
                 collapse_test_iterator = get_collapse_test_iterator(dataset, channel_keyword=channel_name, step_number=2, group_keyword=group_keyword, n_frames=n_frames)
@@ -130,6 +144,8 @@ if __name__ == "__main__":
     def init_model():
         arch_args = copy.deepcopy(CONFIG["model_architecture"])
         n_frames = arch_args.pop("n_frames", 0)
+        if COLOR and n_frames > 0 :
+            raise ValueError("multiple frame is incompatible with color dataset")
         n_components = arch_args.pop("n_components", 3 if RENOISE_MODE else 1)
         shape = CONFIG["dataset_parameters"]["input_shape"]
         input_shape = [None if s <= 0 else s for s in shape]
@@ -137,22 +153,19 @@ if __name__ == "__main__":
         arch_type = arch_args.pop("architecture_type", "multiframe").lower()
         combine_residuals_layers = arch_args.pop("combine_residuals_layers", [])
         if arch_type=="multiframe":
-            dnet = get_dnet_multiframe(n_frames=n_frames, single_output=False, renoise_mode=False, combine_residuals_layers=combine_residuals_layers, architecture_args=arch_args)
+            dnet = get_dnet_multiframe(n_frames=n_frames if not COLOR else 1, single_output=False, renoise_mode=False, combine_residuals_layers=combine_residuals_layers, architecture_args=arch_args)
         elif arch_type=="unet":
             n_filters = arch_args.get("filters", 96)
             depth = arch_args.get("n_downsampling", 3)
             skip = arch_args.get("skip_connection_mode", "NORMAL").lower()
             n_conv1x1 = arch_args.get("n_tail_conv", 2)
-            dnet = get_dnet(n_filters=n_filters, depth = depth, skip_sg = skip=="stop_gradient", skip_omit=[0] if skip=="omit" else None, n_conv1x1=n_conv1x1, input_channels=2 * n_frames + 1)
+            dnet = get_dnet(n_filters=n_filters, depth = depth, skip_sg = skip=="stop_gradient", skip_omit=[0] if skip=="omit" else None, n_conv1x1=n_conv1x1, input_channels=3 if COLOR else 2 * n_frames + 1)
         else:
             raise ValueError(f"Unknown architecture: {arch_type}")
         denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet,
                                  convolution=get_convolution(PSF), renoise_correlation_range=NOISE_CORRELATION_RANGE,
                                  train_on_central_channel_only=False)
-        if NOISE_CORRELATION_RANGE is not None:
-            denoiser.flip_invariance_transpose = False
-        else:
-            denoiser.n_flip_per_batch = 3  # so that rotate is performed in a separate batch # TODO : necessary ?
+        denoiser.flip_invariance_transpose = False
 
         if args.export_only or args.compute_metrics and os.path.exists(WEIGHT_PATH):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
@@ -175,6 +188,8 @@ if __name__ == "__main__":
             denoiser.set_flip_invariance(True, False, 1)
         tf.saved_model.save(denoiser.get_inference_model(central_output_channel=True), path)
 
+
+    COLOR = is_color_dataset(CONFIG)
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})", flush=True)
         denoiser = init_model()
@@ -197,7 +212,7 @@ if __name__ == "__main__":
             input_only = test_param.get("input_only", True)
             if RENOISE_MODE:
                 train_it = train_it[0]
-                input_only = True
+                #input_only = True
             n_iterations = test_param.get("iteration_number", 10)
             root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
@@ -209,7 +224,7 @@ if __name__ == "__main__":
             print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
             for i in range(n_iterations):
                 input = train_it[idx]
-                if not RENOISE_MODE:
+                if True: # not RENOISE_MODE
                     input, output = input
                     if not input_only:
                         outputs.append(output)
@@ -244,6 +259,7 @@ if __name__ == "__main__":
             # init model
             print("init model...", flush=True)
             denoiser = init_model()
+            print(f"it[0]: {train_it[0][0].shape}, {train_it[0][1].shape}; channels: {denoiser.input_channels}, {denoiser.input_channels}", flush=True)
             N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0: # perform training
                 train_data = train_denoiser(denoiser, train_it,
