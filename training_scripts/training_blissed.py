@@ -153,7 +153,7 @@ if __name__ == "__main__":
         arch_type = arch_args.pop("architecture_type", "multiframe").lower()
         combine_residuals_layers = arch_args.pop("combine_residuals_layers", [])
         if arch_type=="multiframe":
-            dnet = get_dnet_multiframe(n_frames=n_frames if not COLOR else 1, single_output=False, renoise_mode=False, combine_residuals_layers=combine_residuals_layers, architecture_args=arch_args)
+            dnet = get_dnet_multiframe(n_frames=n_frames if not COLOR else 1, combine_residuals_layers=combine_residuals_layers, architecture_args=arch_args)
         elif arch_type=="unet":
             n_filters = arch_args.get("filters", 96)
             depth = arch_args.get("n_downsampling", 3)
@@ -187,7 +187,6 @@ if __name__ == "__main__":
         else: # rotation forbidden
             denoiser.set_flip_invariance(True, False, 1)
         tf.saved_model.save(denoiser.get_inference_model(central_output_channel=True), path)
-
 
     COLOR = is_color_dataset(CONFIG)
     if args.export_only:
@@ -268,7 +267,7 @@ if __name__ == "__main__":
                                             training_mode=1 if RENOISE_MODE else 0,
                                             learning_rate=LR, learning_rate_min=MIN_LR, epsilon=EPSILON_RANGE[0], epsilon_min=EPSILON_RANGE[1],
                                             collapse_test_iterator=collapse_test_it, collapse_test_n_max=0,
-                                            eval_iterator=eval_iterator, eval_center_scale=CENTER_SCALE, eval_data_range=None, eval_period=1,
+                                            eval_iterator=eval_iterator, eval_center_scale=CENTER_SCALE, eval_data_range=None, eval_period=1, eval_verbose=0,
                                             weight_path=WEIGHT_PATH, log_path=LOG_PATH, additional_callbacks=None,
                                             fit_kwargs={"workers": WORKERS})
             elif START_EPOCH > 0:
