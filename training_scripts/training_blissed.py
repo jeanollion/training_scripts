@@ -14,6 +14,7 @@ from ssnb_denoising.datasets import get_center_scale
 from ssnb_denoising.training import train_denoiser, get_train_iterator, get_collapse_test_iterator
 from ssnb_denoising.datasets.evaluation import get_eval_iterator
 from ssnb_denoising.models import get_dnet, get_dnet_multiframe, get_convolution, BlindDenoiser
+from ssnb_denoising.models.dnet_n2n import get_dnet_n2n
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm
 
 __VERSION__ = '1.0.0'
@@ -147,12 +148,13 @@ if __name__ == "__main__":
         if COLOR and n_frames > 0 :
             raise ValueError("multiple frame is incompatible with color dataset")
         n_components = arch_args.pop("n_components", 3 if RENOISE_MODE else 1)
+        dark_noise_sigma = arch_args.pop("dark_noise_sigma", 0)
         shape = CONFIG["dataset_parameters"]["input_shape"]
-        input_shape = [None if s <= 0 else s for s in shape]
-        arch_args["spatial_dimensions"] = input_shape
-        arch_type = arch_args.pop("architecture_type", "multiframe").lower()
+        arch_type = arch_args.pop("architecture_type", "unetmultiframe").lower()
         combine_residuals_layers = arch_args.pop("combine_residuals_layers", [])
-        if arch_type=="multiframe":
+        if arch_type=="unetmultiframe":
+            input_shape = [None if s <= 0 else s for s in shape]
+            arch_args["spatial_dimensions"] = input_shape
             dnet = get_dnet_multiframe(n_frames=n_frames if not COLOR else 1, combine_residuals_layers=combine_residuals_layers, architecture_args=arch_args)
         elif arch_type=="unet":
             n_filters = arch_args.get("filters", 96)
@@ -160,11 +162,14 @@ if __name__ == "__main__":
             skip = arch_args.get("skip_connection_mode", "NORMAL").lower()
             n_conv1x1 = arch_args.get("n_tail_conv", 2)
             dnet = get_dnet(n_filters=n_filters, depth = depth, skip_sg = skip=="stop_gradient", skip_omit=[0] if skip=="omit" else None, n_conv1x1=n_conv1x1, input_channels=3 if COLOR else 2 * n_frames + 1)
+        elif arch_type == "unetn2n":
+            depth = arch_args.pop("n_downsampling", 3)
+            dnet = get_dnet_n2n(depth=depth, input_channels=3 if COLOR else 2 * n_frames + 1, **arch_args)
         else:
             raise ValueError(f"Unknown architecture: {arch_type}")
         denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet,
                                  convolution=get_convolution(PSF), renoise_correlation_range=NOISE_CORRELATION_RANGE,
-                                 train_on_central_channel_only=False)
+                                 train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma)
         denoiser.flip_invariance_transpose = False
 
         if args.export_only or args.compute_metrics and os.path.exists(WEIGHT_PATH):
@@ -181,11 +186,14 @@ if __name__ == "__main__":
             print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
         return denoiser
 
-    def export_model(denoiser, path):
-        if NOISE_CORRELATION_RANGE is None: # rotation allowed
-            denoiser.set_flip_invariance(True, True, 1)  # if Y and X have different shapes, tensors cannot be concatenated -> n_flip_per_batch=1
-        else: # rotation forbidden
-            denoiser.set_flip_invariance(True, False, 1)
+    def export_model(denoiser, path, avg_flip:bool=False):
+        if avg_flip:
+            if NOISE_CORRELATION_RANGE is None: # rotation allowed
+                denoiser.set_flip_invariance(True, True, 1)  # if Y and X have different shapes, tensors cannot be concatenated -> n_flip_per_batch=1
+            else: # rotation forbidden
+                denoiser.set_flip_invariance(True, False, 1)
+        else:
+            denoiser.set_flip_invariance(False, False, 1)
         tf.saved_model.save(denoiser.get_inference_model(central_output_channel=True), path)
 
     COLOR = is_color_dataset(CONFIG)
