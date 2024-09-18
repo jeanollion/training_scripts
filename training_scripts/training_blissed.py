@@ -138,7 +138,11 @@ if __name__ == "__main__":
                 return train_iterator
 
         elif dataset_type == "EVAL":
-            contraction_factor = 2**CONFIG["model_architecture"].get("n_downsampling", 3)
+            if CONFIG["model_architecture"]["architecture_type"] == "UNetMultiFrame":
+                n_downsampling = len(CONFIG["model_architecture"]["encoder_settings"])
+            else:
+                n_downsampling = CONFIG["model_architecture"].get("n_downsampling", 3)
+            contraction_factor = 2**n_downsampling
             return get_eval_iterator(dataset, noisy_channel=channel_name, group_keyword=group_keyword, n_frames=n_frames, contraction_factor=contraction_factor)
 
 
@@ -149,13 +153,9 @@ if __name__ == "__main__":
             raise ValueError("multiple frame is incompatible with color dataset")
         n_components = arch_args.pop("n_components", 3 if RENOISE_MODE else 1)
         dark_noise_sigma = arch_args.pop("dark_noise_sigma", 0)
-        shape = CONFIG["dataset_parameters"]["input_shape"]
         arch_type = arch_args.pop("architecture_type", "unetmultiframe").lower()
-        combine_residuals_layers = arch_args.pop("combine_residuals_layers", [])
         if arch_type=="unetmultiframe":
-            input_shape = [None if s <= 0 else s for s in shape]
-            arch_args["spatial_dimensions"] = input_shape
-            dnet = get_dnet_multiframe(n_frames=n_frames if not COLOR else 1, combine_residuals_layers=combine_residuals_layers, architecture_args=arch_args)
+            dnet = get_dnet_multiframe(n_frames=n_frames if not COLOR else 1, **arch_args)
         elif arch_type=="unet":
             n_filters = arch_args.get("filters", 96)
             depth = arch_args.get("n_downsampling", 3)
