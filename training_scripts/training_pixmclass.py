@@ -206,7 +206,8 @@ if __name__ == "__main__":
             elif START_EPOCH > 0:
                 print("Start Epoch is greater than Epoch number.", flush=True)
             train_it.close()
-            # export model
-            print("saving model...", flush=True)
-            tf.saved_model.save(model, SAVED_MODEL_PATH)
-            print("model saved", flush=True)
+
+            if not args.train_only: # export model
+                print("saving model...", flush=True)
+                tf.saved_model.save(model, SAVED_MODEL_PATH)
+                print("model saved", flush=True)

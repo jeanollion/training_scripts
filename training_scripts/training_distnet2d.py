@@ -288,7 +288,8 @@ if __name__ == "__main__":
             train_it.close(force=True)
             if hsm_cb is not None:
                 hsm_cb.close()
-            # export model
-            print("saving model...", flush=True)
-            model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
-            print("model saved", flush=True)
+
+            if not args.train_only: # export model
+                print("saving model...", flush=True)
+                model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+                print("model saved", flush=True)

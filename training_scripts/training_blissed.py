@@ -21,7 +21,8 @@ __VERSION__ = '1.0.0'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
-parser.add_argument("--export_only", action="store_true", help="skip model training")
+parser.add_argument("--export_only", action="store_true", help="skip model training, only export")
+parser.add_argument("--train_only", action="store_true", help="train but no export")
 parser.add_argument("--test_data_augmentation", action="store_true", help="generate and store example of augmented data")
 parser.add_argument("--compute_metrics", action="store_true", help="compute loss")
 parser.add_argument("--export_dir", type=str, help="directory to export saved model to")
@@ -143,7 +144,7 @@ if __name__ == "__main__":
             else:
                 n_downsampling = CONFIG["model_architecture"].get("n_downsampling", 3)
             contraction_factor = 2**n_downsampling
-            return get_eval_iterator(dataset, noisy_channel=channel_name, group_keyword=group_keyword, n_frames=n_frames, contraction_factor=contraction_factor)
+            return get_eval_iterator(dataset, noisy_channel=channel_name, group_keyword=group_keyword, n_frames=n_frames, contraction_factor=contraction_factor, memory_persistent=memory_persistent)
 
 
     def init_model():
@@ -281,7 +282,7 @@ if __name__ == "__main__":
             elif START_EPOCH > 0:
                 print("Start Epoch is greater than Epoch number.", flush=True)
 
-            # export model
-            print("saving model...", flush=True)
-            export_model(denoiser, SAVED_MODEL_PATH)
-            print("model saved", flush=True)
+            if not args.train_only: # export model
+                print("saving model...", flush=True)
+                export_model(denoiser, SAVED_MODEL_PATH)
+                print("model saved", flush=True)
