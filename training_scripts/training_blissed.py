@@ -12,7 +12,7 @@ from dataset_iterator.utils import transpose_list, is_list
 from dataset_iterator.helpers import get_channel_number
 from ssnb_denoising.datasets import get_center_scale
 from ssnb_denoising.training import train_denoiser, get_train_iterator, get_collapse_test_iterator
-from ssnb_denoising.datasets.evaluation import get_eval_iterator
+from ssnb_denoising.datasets.evaluation import get_eval_iterator, evaluate_model, get_scaling_fun
 from ssnb_denoising.models import get_dnet, get_dnet_multiframe, get_convolution, BlindDenoiser
 from ssnb_denoising.models.dnet_n2n import get_dnet_n2n
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm
@@ -24,6 +24,7 @@ parser.add_argument("--model_idx", type=int, help="index of model")
 parser.add_argument("--export_only", action="store_true", help="skip model training, only export")
 parser.add_argument("--train_only", action="store_true", help="train but no export")
 parser.add_argument("--test_data_augmentation", action="store_true", help="generate and store example of augmented data")
+parser.add_argument("--test_predict", action="store_true", help="make predictions on evaluation dataset")
 parser.add_argument("--compute_metrics", action="store_true", help="compute loss")
 parser.add_argument("--export_dir", type=str, help="directory to export saved model to")
 parser.add_argument("--n_epochs", type=int, help="number of training epochs")
@@ -35,7 +36,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # get parameters
-    CONFIG = open_config_file(args.config_dir, args.test_data_augmentation)
+    CONFIG = open_config_file(args.config_dir, args.test_data_augmentation or args.test_predict)
     t_p = CONFIG["training_parameters"]
     MODEL_NAME = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
     WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"], MODEL_NAME + ".h5") if len(t_p["weight_dir"]) > 0 else os.path.join(args.config_dir, MODEL_NAME + ".h5")
@@ -49,7 +50,7 @@ if __name__ == "__main__":
     EPSILON_RANGE = t_p.get("epsilon_range", [0.1, 0.2])
     EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
     WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
-    SHUFFLE = not args.test_data_augmentation
+    SHUFFLE = not (args.test_data_augmentation or args.test_predict)
     START_EPOCH = t_p.get("start_epoch", 0)
     DENOISING_PARAMETERS = CONFIG.get("denoising_parameters", {})
     RENOISE_MODE = DENOISING_PARAMETERS["denoising_mode"] == "RENOISE"
@@ -109,7 +110,7 @@ if __name__ == "__main__":
     def init_iterator(ds_kwargs, step_number, dataset=None, dataset_type="TRAIN", **kwargs):
         if dataset is None:
             dataset = ds_kwargs["path"]
-            memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
+            memory_persistent = WORKERS > 1 and not (args.test_data_augmentation or args.test_predict) and should_load_dataset_in_shm(dataset, mode=ds_kwargs.get("shared_memory", "auto"))
         else:
             memory_persistent = isinstance(dataset, MemoryIO)
         channel_name = ds_kwargs.get("channel_name", "raw")
@@ -155,6 +156,7 @@ if __name__ == "__main__":
         n_components = arch_args.pop("n_components", 3 if RENOISE_MODE else 1)
         dark_noise_sigma = arch_args.pop("dark_noise_sigma", 0)
         arch_type = arch_args.pop("architecture_type", "unetmultiframe").lower()
+        nnet_args = arch_args.pop("nnet_parameters", {})
         if arch_type=="unetmultiframe":
             dnet = get_dnet_multiframe(n_frames=n_frames if not COLOR else 1, **arch_args)
         elif arch_type=="unet":
@@ -168,7 +170,7 @@ if __name__ == "__main__":
             dnet = get_dnet_n2n(depth=depth, input_channels=3 if COLOR else 2 * n_frames + 1, **arch_args)
         else:
             raise ValueError(f"Unknown architecture: {arch_type}")
-        denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet,
+        denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet, nnet_kwargs=nnet_args,
                                  convolution=get_convolution(PSF), renoise_correlation_range=NOISE_CORRELATION_RANGE,
                                  train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma)
         denoiser.flip_invariance_transpose = False
@@ -252,6 +254,44 @@ if __name__ == "__main__":
                 if not input_only:
                     h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output_0_{output_name}", data=output)
 
+        elif args.test_predict:
+            scale_f, scale_rev_f = get_scaling_fun(CENTER_SCALE)
+            test_param = CONFIG.get("test_data_augmentation_parameters", {})
+            root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
+            file_path = os.path.join(root_path, "test_data_augmentation.h5")
+            idx = test_param.get("batch_index", -1)
+            it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="EVAL",
+                              center_scale=CENTER_SCALE)
+            eval = it is not None
+            if it is None:
+                it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE,
+                                  center_scale=CENTER_SCALE)
+            if idx < 0 or idx >= len(it):
+                idx = random.randint(0, len(it))
+            if not eval:
+                input = it[idx]
+                if True:  # not RENOISE_MODE
+                    _, input = input  # first tensor is masked
+                    input = input[..., :input.shape[-1] / 2]  # second tensor is raw image concatenated with mask
+            else:
+                input, true = it[0]
+
+            denoiser = init_model()
+            denoised = denoiser.predict_denoised(scale_f(input), training=False, post_process=True)
+            denoised = scale_rev_f(denoised)
+            with h5py.File(file_path, mode='w') as h5pyFile:
+                transpose = lambda im : np.transpose(im, [0, 3, 1, 2] if COLOR else [3, 0, 1, 2])
+                h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/noisy", data=transpose(input))
+                h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/denoised", data=transpose(denoised))
+                if eval:
+                    h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/groundTruth", data=transpose(true))
+            if eval:
+                if CENTER_SCALE[0] == 0. and CENTER_SCALE[1] == 255.:
+                    eval_data_range = 255.
+                else:
+                    eval_data_range = None
+                evaluate_model(denoiser, it, CENTER_SCALE, data_range=eval_data_range, verbose=1)
+
 
         elif args.compute_metrics:
             raise ValueError("Not supported yet")
@@ -270,12 +310,13 @@ if __name__ == "__main__":
             print(f"it[0]: {train_it[0][0].shape}, {train_it[0][1].shape}; channels: {denoiser.input_channels}, {denoiser.input_channels}", flush=True)
             N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0: # perform training
+                collapse_test_limit=CONFIG["training_parameters"].get("collapse_test_limit", 10)
                 train_data = train_denoiser(denoiser, train_it,
                                             n_epochs=N_EPOCHS, start_epoch=START_EPOCH, step_number = STEP_NUMBER,
                                             n_epochs_masked_training=0,
                                             training_mode=1 if RENOISE_MODE else 0,
                                             learning_rate=LR, learning_rate_min=MIN_LR, epsilon=EPSILON_RANGE[0], epsilon_min=EPSILON_RANGE[1],
-                                            collapse_test_iterator=collapse_test_it, collapse_test_n_max=0,
+                                            collapse_test_iterator=collapse_test_it, collapse_test_limit=collapse_test_limit,
                                             eval_iterator=eval_iterator, eval_center_scale=CENTER_SCALE, eval_data_range=None, eval_period=1, eval_verbose=0,
                                             weight_path=WEIGHT_PATH, log_path=LOG_PATH, additional_callbacks=None,
                                             fit_kwargs={"workers": WORKERS})
