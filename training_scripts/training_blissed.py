@@ -54,6 +54,7 @@ if __name__ == "__main__":
     START_EPOCH = t_p.get("start_epoch", 0)
     DENOISING_PARAMETERS = CONFIG.get("denoising_parameters", {})
     RENOISE_MODE = DENOISING_PARAMETERS["denoising_mode"] == "RENOISE"
+    TRAINING_MODE = (1 if DENOISING_PARAMETERS["mask_nnet"] else 2) if RENOISE_MODE else 0
     NOISE_CORRELATION_RANGE = DENOISING_PARAMETERS.get("noise_correlation_range", None)
     if NOISE_CORRELATION_RANGE == 0 or (is_list(NOISE_CORRELATION_RANGE) and np.all([n==0 for n in NOISE_CORRELATION_RANGE])):
         NOISE_CORRELATION_RANGE = None
@@ -131,7 +132,8 @@ if __name__ == "__main__":
                                                 channel_keyword=channel_name, train_group_keyword=group_keyword,
                                                 center_scale=center_scale,
                                                 n_frames=n_frames,
-                                                mask=True, # not RENOISE_MODE
+                                                mask=TRAINING_MODE<2,
+                                                mask_xaxis_radius = NOISE_CORRELATION_RANGE if not RENOISE_MODE else 0,
                                                 step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
             if RENOISE_MODE:
                 collapse_test_iterator = get_collapse_test_iterator(dataset, channel_keyword=channel_name, step_number=2, group_keyword=group_keyword, n_frames=n_frames)
@@ -175,11 +177,11 @@ if __name__ == "__main__":
                                  train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma)
         denoiser.flip_invariance_transpose = False
 
-        if args.export_only or args.compute_metrics and os.path.exists(WEIGHT_PATH):
+        if (args.export_only or args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             denoiser.load_weights(WEIGHT_PATH)
             print(f"Weights loaded : {WEIGHT_PATH}", flush=True)
-        elif LOAD_WEIGHT_PATH is not None or args.compute_metrics:
+        elif LOAD_WEIGHT_PATH is not None or args.compute_metrics or args.test_predict:
             assert os.path.exists(LOAD_WEIGHT_PATH), f"weights {LOAD_WEIGHT_PATH} not found"
             if os.path.isdir(LOAD_WEIGHT_PATH):
                 loaded_model = tf.keras.models.load_model(LOAD_WEIGHT_PATH)
@@ -314,7 +316,7 @@ if __name__ == "__main__":
                 train_data = train_denoiser(denoiser, train_it,
                                             n_epochs=N_EPOCHS, start_epoch=START_EPOCH, step_number = STEP_NUMBER,
                                             n_epochs_masked_training=0,
-                                            training_mode=DENOISING_PARAMETERS.get("training_mode", 1) if RENOISE_MODE else 0,
+                                            training_mode=TRAINING_MODE,
                                             learning_rate=LR, learning_rate_min=MIN_LR, epsilon=EPSILON_RANGE[0], epsilon_min=EPSILON_RANGE[1],
                                             collapse_test_iterator=collapse_test_it, collapse_test_limit=collapse_test_limit,
                                             eval_iterator=eval_iterator, eval_center_scale=CENTER_SCALE, eval_data_range=None, eval_period=1, eval_verbose=0,
