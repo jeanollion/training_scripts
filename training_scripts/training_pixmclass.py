@@ -44,6 +44,7 @@ if __name__ == "__main__":
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
+    VAL_STEP_NUMBER = t_p.get("validation_step_number", 100)
     PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
     MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
@@ -56,7 +57,7 @@ if __name__ == "__main__":
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; PixMClass version: {version('PixMClass')}")
     print(f"configuration file found. ")
 
-    def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
+    def init_iterator(ds_conf, step_number, dataset=None, dataset_type="TRAIN", **kwargs):
         data_aug_params = ds_conf.get("data_augmentation", {})
         channel_names = ds_conf.get("channel_name", "raw")
         if not isinstance(channel_names, (list, tuple)):
@@ -67,12 +68,13 @@ if __name__ == "__main__":
             memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
         else:
             memory_persistent = isinstance(dataset, MemoryIO)
-        weights = get_class_weights(dataset, classes_name) # inverse frequency
-        weight_limit = ds_conf.get("loss_weight_range", None)
-        if weight_limit is not None:
-            assert len(weight_limit) == 2, "Weight limit should be of length 2"
-            weights = np.minimum(weights, np.max(weight_limit))
-            weights = np.maximum(weights, np.min(weight_limit))
+        if dataset_type=="TRAIN":
+            weights = get_class_weights(dataset, classes_name) # inverse frequency
+            weight_limit = ds_conf.get("loss_weight_range", None)
+            if weight_limit is not None:
+                assert len(weight_limit) == 2, "Weight limit should be of length 2"
+                weights = np.minimum(weights, np.max(weight_limit))
+                weights = np.maximum(weights, np.min(weight_limit))
         scaling_parameters = data_aug_params.get("scaling_parameters", None)
         if scaling_parameters is not None:
             scaling_parameters = ensure_multiplicity(len(channel_names), scaling_parameters)
@@ -91,12 +93,16 @@ if __name__ == "__main__":
 
         batch_size = ds_conf["batch_size"]
         tiling_parameters = ds_conf.get("tiling_parameters", None)
-        return pmt.get_iterator(dataset, memory_persistent=memory_persistent, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
+        it = pmt.get_iterator(dataset, memory_persistent=memory_persistent, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
                                 input_channel_keywords=channel_names, class_keyword=classes_name,
                                 train_group_keyword=ds_conf.get("keyword", None),
                                 tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number, dtype="float32", shuffle=kwargs.get("shuffle", True),
                                 elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
-                                ), weights
+                                )
+        if dataset_type=="TRAIN":
+            return it, weights
+        else:
+            return it
 
     def init_model(n_classes):
         model = get_unet(n_classes, skip_omit=0)
@@ -119,8 +125,8 @@ if __name__ == "__main__":
         print("model saved", flush=True)
     else:
         print(f"init iterator...", flush=True)
-        train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
-        test_it = None
+        train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TRAIN")
+        test_it = get_iterator(config, init_iterator, step_number=VAL_STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TEST")
         if len(weight_list) > 1:
             # weighted sum of weights
             weights = np.zeros_like(weight_list[0])
@@ -193,20 +199,30 @@ if __name__ == "__main__":
                     if shm is not None and shm[2] < 1:
                         print(f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", flush=True)
                     #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                    enq = OrderedEnqueuerCF(train_it, shuffle=True)
+                    enq = OrderedEnqueuerCF(train_it, shuffle=True) #, name="train_gen"
                     enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
                     gen = enq.get()
+                    if test_it is not None: # TODO syncronize test gen and train gen
+                        test_enq = OrderedEnqueuerCF(test_it, shuffle=False) #, name="test_gen"
+                        test_enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
+                        test_gen = test_enq.get()
+                    else:
+                        test_gen = None
                 else:
                     gen = train_it
-                model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
+                    test_gen = test_it
+                model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_gen, callbacks=callbacks, validation_steps=VAL_STEP_NUMBER, validation_freq=t_p.get("validation_frequency", 1))
                 if WORKERS > 1:
                     print("stopping enqueuer", flush=True)
                     enq.stop()
+                    if test_it is not None:
+                        test_enq.stop()
                 print("end of training", flush=True)
             elif START_EPOCH > 0:
                 print("Start Epoch is greater than Epoch number.", flush=True)
             train_it.close()
-
+            if test_it is not None:
+                test_it.close()
             if not args.train_only: # export model
                 print("saving model...", flush=True)
                 tf.saved_model.save(model, SAVED_MODEL_PATH)
