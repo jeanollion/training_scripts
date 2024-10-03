@@ -132,10 +132,10 @@ if __name__ == "__main__":
                                                 channel_keyword=channel_name, train_group_keyword=group_keyword,
                                                 center_scale=center_scale,
                                                 n_frames=n_frames,
-                                                mask=TRAINING_MODE<2,
+                                                mask=TRAINING_MODE<2 and not args.test_predict,
                                                 mask_xaxis_radius = NOISE_CORRELATION_RANGE if not RENOISE_MODE else 0,
                                                 step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
-            if RENOISE_MODE:
+            if RENOISE_MODE and not args.test_predict:
                 collapse_test_iterator = get_collapse_test_iterator(dataset, channel_keyword=channel_name, step_number=2, group_keyword=group_keyword, n_frames=n_frames)
                 return train_iterator, collapse_test_iterator
             else:
@@ -262,21 +262,16 @@ if __name__ == "__main__":
             root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
             idx = test_param.get("batch_index", -1)
-            it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="EVAL",
-                              center_scale=CENTER_SCALE)
-            eval = it is not None
+            it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="EVAL",  center_scale=CENTER_SCALE)
+            is_eval_it = it is not None
             if it is None:
-                it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE,
-                                  center_scale=CENTER_SCALE)
+                it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, center_scale=CENTER_SCALE)
             if idx < 0 or idx >= len(it):
                 idx = random.randint(0, len(it))
-            if not eval:
-                input = it[idx]
-                if True:  # not RENOISE_MODE
-                    _, input = input  # first tensor is masked
-                    input = input[..., :input.shape[-1] / 2]  # second tensor is raw image concatenated with mask
+            if not is_eval_it:
+                input, = it[idx]
             else:
-                input, true = it[0]
+                input, true = it[idx]
 
             denoiser = init_model()
             denoised = denoiser.predict_denoised(scale_f(input), training=False, post_process=True)
@@ -285,9 +280,9 @@ if __name__ == "__main__":
                 transpose = lambda im : np.transpose(im, [0, 3, 1, 2] if COLOR else [3, 0, 1, 2])
                 h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/noisy", data=transpose(input))
                 h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/denoised", data=transpose(denoised))
-                if eval:
+                if is_eval_it:
                     h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/groundTruth", data=transpose(true))
-            if eval:
+            if is_eval_it:
                 if CENTER_SCALE[0] == 0. and CENTER_SCALE[1] == 255.:
                     eval_data_range = 255.
                 else:
