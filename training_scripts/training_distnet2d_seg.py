@@ -27,6 +27,7 @@ __VERSION__ = "1.1.0"
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
+parser.add_argument("--train_only", action="store_true", help="train but no export")
 parser.add_argument("--export_only", action="store_true", help="skip model training")
 parser.add_argument("--test_data_augmentation", action="store_true", help="generate and store example of augmented data")
 parser.add_argument("--export_dir", type=str, help="directory to export saved model to")
