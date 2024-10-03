@@ -105,9 +105,10 @@ if __name__ == "__main__":
             return [scaling_parameters["center"], scaling_parameters["scale"]]
         elif scaling_parameters["mode"]=="MODE_PERCENTILE":
             mode_percentile_count = []
+            percentile = scaling_parameters.get("percentile", 95)
             for ds_conf in config["dataset_list"]:
                 if ds_conf.get("type", "TRAIN") == dataset_type:
-                    mode_percentile_count.append(get_center_scale(ds_conf["path"], ds_conf.get("channel_name", "raw"), ds_conf.get("keyword", None), method="mode-percentile", return_count=True))
+                    mode_percentile_count.append(get_center_scale(ds_conf["path"], ds_conf.get("channel_name", "raw"), ds_conf.get("keyword", None), method="mode-percentile", percentile=percentile, return_count=True))
             return weighted_avg(mode_percentile_count)
         elif scaling_parameters["mode"]=="MEAN_SD":
             center_scale_count = []
