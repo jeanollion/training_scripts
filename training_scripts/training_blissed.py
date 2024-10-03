@@ -145,7 +145,7 @@ if __name__ == "__main__":
                                                 mask=TRAINING_MODE < 2 and not args.test_predict,
                                                 mask_xaxis_radius = NOISE_CORRELATION_RANGE if not RENOISE_TRAINING else 0,
                                                 step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
-            if RENOISE_TRAINING and not args.test_predict:
+            if RENOISE_TRAINING and (not args.test_predict or args.test_data_augmentation):
                 collapse_test_iterator = get_collapse_test_iterator(dataset, channel_keyword=channel_name, step_number=2, group_keyword=group_keyword, n_frames=n_frames)
                 return train_iterator, collapse_test_iterator
             else:
@@ -276,10 +276,10 @@ if __name__ == "__main__":
             root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
             idx = test_param.get("batch_index", -1)
-            it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="EVAL",  center_scale=CENTER_SCALE)
+            it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="EVAL",  center_scale=[0., 1.])
             is_eval_it = it is not None
             if it is None:
-                it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, center_scale=CENTER_SCALE)
+                it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, center_scale=[0., 1.])
             if idx < 0 or idx >= len(it):
                 idx = random.randint(0, len(it))
             if not is_eval_it:
