@@ -1,4 +1,7 @@
 import os
+os.environ["KERAS_BACKEND"] = "tensorflow"
+os.environ["TF_USE_LEGACY_KERAS"]="1"
+import json
 import argparse
 import random
 import numpy as np
@@ -8,7 +11,7 @@ import copy
 from importlib.metadata import version
 from dataset_iterator.datasetIO import MemoryIO
 from dataset_iterator import extract_tile_random_zoom_function
-from dataset_iterator.utils import transpose_list, is_list
+from dataset_iterator.utils import transpose_list, is_list, is_keras_3, get_tf_version
 from dataset_iterator.helpers import get_channel_number
 from ssnb_denoising.datasets import get_center_scale
 from ssnb_denoising.training import train_denoiser, get_train_iterator, get_collapse_test_iterator
@@ -16,6 +19,7 @@ from ssnb_denoising.datasets.evaluation import get_eval_iterator, evaluate_model
 from ssnb_denoising.models import get_dnet, get_dnet_multiframe, get_convolution, BlindDenoiser
 from ssnb_denoising.models.dnet_n2n import get_dnet_n2n
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm
+from tensorflow.keras.models import load_model
 
 __VERSION__ = '1.0.0'
 parser = argparse.ArgumentParser()
@@ -39,10 +43,11 @@ if __name__ == "__main__":
     CONFIG = open_config_file(args.config_dir, args.test_data_augmentation or args.test_predict)
     t_p = CONFIG["training_parameters"]
     MODEL_NAME = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
-    WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"], MODEL_NAME + ".weights.h5") if len(t_p["weight_dir"]) > 0 else os.path.join(args.config_dir, MODEL_NAME + ".weights.h5")
+    WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"], MODEL_NAME + ".h5") if len(t_p["weight_dir"]) > 0 else os.path.join(args.config_dir, MODEL_NAME + ".h5")
     LOAD_WEIGHT_PATH = t_p["load_model_file"] if len(t_p.get("load_model_file", "")) > 0 else None
     LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], MODEL_NAME) if len(t_p["log_dir"]) > 0 else os.path.join(args.config_dir, MODEL_NAME)
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, MODEL_NAME)
+    SCALING_FILE = os.path.join(args.config_dir, f"{MODEL_NAME}.scaling_parameters.json")
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 800)
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
@@ -53,8 +58,8 @@ if __name__ == "__main__":
     SHUFFLE = not (args.test_data_augmentation or args.test_predict)
     START_EPOCH = t_p.get("start_epoch", 0)
     DENOISING_PARAMETERS = CONFIG.get("denoising_parameters", {})
-    RENOISE_MODE = DENOISING_PARAMETERS["denoising_mode"] == "RENOISE"
-    TRAINING_MODE = (1 if DENOISING_PARAMETERS["mask_nnet"] else 2) if RENOISE_MODE else 0
+    RENOISE_TRAINING = DENOISING_PARAMETERS["denoising_mode"] == "RENOISE"
+    TRAINING_MODE = (1 if DENOISING_PARAMETERS["mask_nnet"] else 2) if RENOISE_TRAINING else 0
     NOISE_CORRELATION_RANGE = DENOISING_PARAMETERS.get("noise_correlation_range", None)
     if NOISE_CORRELATION_RANGE == 0 or (is_list(NOISE_CORRELATION_RANGE) and np.all([n==0 for n in NOISE_CORRELATION_RANGE])):
         NOISE_CORRELATION_RANGE = None
@@ -90,6 +95,11 @@ if __name__ == "__main__":
         return color
 
     def get_dataset_center_scale(config, dataset_type="TRAIN"):
+        if (args.test_predict or args.test_data_augmentation or args.compute_metrics) and os.path.isfile(SCALING_FILE):
+            with open(SCALING_FILE, 'r') as f:
+                scale_s = f.read()
+                scale = json.loads(scale_s)
+                return [scale["center"], scale["scale"]]
         scaling_parameters = config["dataset_parameters"].get("scaling_parameters", {"mode":"MODE_PERCENTILE", "percentile":95})
         if scaling_parameters["mode"]=="CONSTANT":
             return [scaling_parameters["center"], scaling_parameters["scale"]]
@@ -132,10 +142,10 @@ if __name__ == "__main__":
                                                 channel_keyword=channel_name, train_group_keyword=group_keyword,
                                                 center_scale=center_scale,
                                                 n_frames=n_frames,
-                                                mask=TRAINING_MODE<2 and not args.test_predict,
-                                                mask_xaxis_radius = NOISE_CORRELATION_RANGE if not RENOISE_MODE else 0,
+                                                mask=TRAINING_MODE < 2 and not args.test_predict,
+                                                mask_xaxis_radius = NOISE_CORRELATION_RANGE if not RENOISE_TRAINING else 0,
                                                 step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
-            if RENOISE_MODE and not args.test_predict:
+            if RENOISE_TRAINING and not args.test_predict:
                 collapse_test_iterator = get_collapse_test_iterator(dataset, channel_keyword=channel_name, step_number=2, group_keyword=group_keyword, n_frames=n_frames)
                 return train_iterator, collapse_test_iterator
             else:
@@ -155,7 +165,7 @@ if __name__ == "__main__":
         n_frames = arch_args.pop("n_frames", 0)
         if COLOR and n_frames > 0 :
             raise ValueError("multiple frame is incompatible with color dataset")
-        n_components = arch_args.pop("n_components", 3 if RENOISE_MODE else 1)
+        n_components = arch_args.pop("n_components", 3 if RENOISE_TRAINING else 1)
         dark_noise_sigma = arch_args.pop("dark_noise_sigma", 0)
         arch_type = arch_args.pop("architecture_type", "unetmultiframe").lower()
         nnet_args = arch_args.pop("nnet_parameters", {})
@@ -184,7 +194,7 @@ if __name__ == "__main__":
         elif LOAD_WEIGHT_PATH is not None or args.compute_metrics or args.test_predict:
             assert os.path.exists(LOAD_WEIGHT_PATH), f"weights {LOAD_WEIGHT_PATH} not found"
             if os.path.isdir(LOAD_WEIGHT_PATH):
-                loaded_model = tf.keras.models.load_model(LOAD_WEIGHT_PATH)
+                loaded_model = load_model(LOAD_WEIGHT_PATH)
                 denoiser.set_weights(loaded_model.get_weights())
             else:
                 denoiser.load_weights(LOAD_WEIGHT_PATH)
@@ -213,18 +223,19 @@ if __name__ == "__main__":
         CENTER_SCALE = get_dataset_center_scale(CONFIG, dataset_type="TRAIN")
         if CENTER_SCALE is None and args.compute_metrics:
             CENTER_SCALE = get_dataset_center_scale(CONFIG, dataset_type="EVAL")
-        print(f"Intensity normalization: center={CENTER_SCALE[0]} scale={CENTER_SCALE[1]}")
-        scaling_file = os.path.join(args.config_dir, f"{MODEL_NAME}.scaling_parameters.json")
-        with open(scaling_file, 'w') as f:
-            f.write(f'{{"center":{CENTER_SCALE[0]}, "scale":{CENTER_SCALE[1]}}}')
+        if not args.test_predict and not args.test_data_augmentation and not args.compute_metrics:
+            print(f"Intensity normalization: center={CENTER_SCALE[0]} scale={CENTER_SCALE[1]}")
+            with open(SCALING_FILE, 'w') as f:
+                f.write(f'{{"center":{CENTER_SCALE[0]}, "scale":{CENTER_SCALE[1]}}}')
         test_it = None
         if args.test_data_augmentation:
             train_it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, center_scale=CENTER_SCALE)
             test_param = CONFIG.get("test_data_augmentation_parameters", {})
             input_only = test_param.get("input_only", True)
-            if RENOISE_MODE:
+            if RENOISE_TRAINING:
                 train_it = train_it[0]
-                #input_only = True
+                if TRAINING_MODE == 2:
+                    input_only = True
             n_iterations = test_param.get("iteration_number", 10)
             root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
@@ -236,11 +247,14 @@ if __name__ == "__main__":
             print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
             for i in range(n_iterations):
                 input = train_it[idx]
-                if True: # not RENOISE_MODE
+                if TRAINING_MODE < 2:
                     input, output = input
                     if not input_only:
                         outputs.append(output)
+                else:
+                    input = input[0]
                 inputs.append(input)
+
                 print(f"{i + 1}/{n_iterations}", flush=True)
             train_it.close()
             input = np.stack(inputs, 0)
@@ -294,7 +308,7 @@ if __name__ == "__main__":
             raise ValueError("Not supported yet")
         else: # training
             train_it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TRAIN", center_scale=CENTER_SCALE)
-            if RENOISE_MODE:
+            if RENOISE_TRAINING:
                 train_it, collapse_test_it = train_it
                 if is_list(collapse_test_it): # collapse test performed on first iterator only
                     collapse_test_it = collapse_test_it[0]

@@ -1,4 +1,5 @@
 FROM training_dnn:tf-2.16.2
+RUN pip install tf-keras~=2.16
 RUN pip install --upgrade h5py==3.11.0
 COPY dataset_iterator /dataset_iterator
 RUN pip install /dataset_iterator
