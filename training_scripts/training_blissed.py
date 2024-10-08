@@ -184,7 +184,7 @@ if __name__ == "__main__":
         else:
             raise ValueError(f"Unknown architecture: {arch_type}")
         denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet, nnet_kwargs=nnet_args,
-                                 convolution=get_convolution(PSF), renoise_correlation_range=NOISE_CORRELATION_RANGE,
+                                 convolution=get_convolution(PSF), renoise_correlation_range=NOISE_CORRELATION_RANGE, noise_conv_regularization=DENOISING_PARAMETERS.get("noise_conv_regularization", 0),
                                  train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma)
         denoiser.flip_invariance_transpose = False
 
