@@ -135,7 +135,7 @@ if __name__ == "__main__":
                                channels_postprocessing_function=pp_fun,
                                output_postprocessing_functions=[apply_batchwise(edm_fun), apply_batchwise(gcdm_fun)],
                                void_mask_proportion=[0, 0] if exclude_void else None,
-                               verbose=False and args.test_data_augmentation, memory_persistent=memory_persistent)
+                               memory_persistent=memory_persistent)
         # either timelapse or multichannel iterator
         if not timelapse:
             return MultiChannelIterator(**iterator_params)
