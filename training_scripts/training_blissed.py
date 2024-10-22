@@ -130,11 +130,12 @@ if __name__ == "__main__":
         n_frames = CONFIG["model_architecture"].pop("n_frames", 0)
         center_scale = kwargs["center_scale"]
         if dataset_type == "TRAIN":
+            rnd = not args.test_data_augmentation and not args.test_predict and CONFIG.get("test_data_augmentation_parameters", {}).get("constant_view", False)
             batch_size = ds_kwargs["batch_size"]
             tiling_parameters = ds_kwargs["tiling_parameters"]
             tiling_parameters["augmentation_rotate"] = NOISE_CORRELATION_RANGE is None
-            tiling_parameters["perform_augmentation"] = True
-            tiling_parameters["random_stride"] = True
+            tiling_parameters["perform_augmentation"] = rnd
+            tiling_parameters["random_stride"] = rnd
             tiling_parameters["zoom_range"] = [1, 1]
             tiling_parameters["aspect_ratio_range"] = [1, 1]
             tiling_parameters["zoom_probability"] = 0
