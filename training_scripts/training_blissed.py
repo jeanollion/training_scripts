@@ -142,7 +142,7 @@ if __name__ == "__main__":
                                                 channel_keyword=channel_name, train_group_keyword=group_keyword,
                                                 center_scale=center_scale,
                                                 n_frames=n_frames,
-                                                mask=TRAINING_MODE < 2 and not args.test_predict,
+                                                mask=not args.test_predict, #TRAINING_MODE < 2 and
                                                 mask_xaxis_radius = NOISE_CORRELATION_RANGE if not RENOISE_TRAINING else 0,
                                                 step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
             if RENOISE_TRAINING and (not args.test_predict or args.test_data_augmentation):
