@@ -82,17 +82,15 @@ if __name__ == "__main__":
             a_b_count = np.sum(a_b_count, axis=0)
             return a_b_count[0] / a_b_count[2], a_b_count[1] / a_b_count[2]
 
-    def is_color_dataset(config):
-        color = None
+    def get_dataset_channel_number(config):
+        n_channels = None
         for ds_conf in config["dataset_list"]:
-            n_channels = get_channel_number(ds_conf["path"], ds_conf.get("channel_name", "raw"), ds_conf.get("keyword", None), n_spatial_dims=2)
-            if n_channels not in [1, 3]:
-                raise ValueError(f"dataset has {n_channels} channels but have either 1 or 3 (color)")
-            if color is None:
-                color = n_channels == 3
-            elif color != (n_channels == 3):
-                raise ValueError(f"at least one dataset has color images and one has grayscale images")
-        return color
+            n_c = get_channel_number(ds_conf["path"], ds_conf.get("channel_name", "raw"), ds_conf.get("keyword", None), n_spatial_dims=2)
+            if n_channels is None:
+                n_channels = n_c
+            elif n_channels != n_c:
+                raise ValueError(f"at least two dataset have channel number that differ: {n_channels} vs {n_c}")
+        return n_channels
 
     def get_dataset_center_scale(config, dataset_type="TRAIN"):
         if (args.test_predict or args.test_data_augmentation or args.compute_metrics) and os.path.isfile(SCALING_FILE):
@@ -165,23 +163,23 @@ if __name__ == "__main__":
     def init_model():
         arch_args = copy.deepcopy(CONFIG["model_architecture"])
         n_frames = arch_args.pop("n_frames", 0)
-        if COLOR and n_frames > 0 :
-            raise ValueError("multiple frame is incompatible with color dataset")
+        if CHANNEL_NUMBER>1 and n_frames > 0 :
+            raise ValueError("multiple frame is incompatible with multichannel dataset")
         n_components = arch_args.pop("n_components", 3 if RENOISE_TRAINING else 1)
         dark_noise_sigma = arch_args.pop("dark_noise_sigma", 0)
         arch_type = arch_args.pop("architecture_type", "unetmultiframe").lower()
         nnet_args = arch_args.pop("nnet_parameters", {})
         if arch_type=="unetmultiframe":
-            dnet = get_dnet_multiframe(n_frames=n_frames if not COLOR else 1, **arch_args)
+            dnet = get_dnet_multiframe(n_channels=CHANNEL_NUMBER if CHANNEL_NUMBER>1 else 2 * n_frames + 1, **arch_args)
         elif arch_type=="unet":
             n_filters = arch_args.get("filters", 96)
             depth = arch_args.get("n_downsampling", 3)
             skip = arch_args.get("skip_connection_mode", "NORMAL").lower()
             n_conv1x1 = arch_args.get("n_tail_conv", 2)
-            dnet = get_dnet(n_filters=n_filters, depth = depth, skip_sg = skip=="stop_gradient", skip_omit=[0] if skip=="omit" else None, n_conv1x1=n_conv1x1, input_channels=3 if COLOR else 2 * n_frames + 1)
+            dnet = get_dnet(n_filters=n_filters, depth = depth, skip_sg = skip=="stop_gradient", skip_omit=[0] if skip=="omit" else None, n_conv1x1=n_conv1x1, input_channels=CHANNEL_NUMBER if CHANNEL_NUMBER>1 else 2 * n_frames + 1)
         elif arch_type == "unetn2n":
             depth = arch_args.pop("n_downsampling", 3)
-            dnet = get_dnet_n2n(depth=depth, input_channels=3 if COLOR else 2 * n_frames + 1, **arch_args)
+            dnet = get_dnet_n2n(depth=depth, input_channels=CHANNEL_NUMBER if CHANNEL_NUMBER>1 else 2 * n_frames + 1, **arch_args)
         else:
             raise ValueError(f"Unknown architecture: {arch_type}")
         denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet, nnet_kwargs=nnet_args,
@@ -213,7 +211,7 @@ if __name__ == "__main__":
             denoiser.set_flip_invariance(False, False, 1)
         tf.saved_model.save(denoiser.get_inference_model(central_output_channel=True), path)
 
-    COLOR = is_color_dataset(CONFIG)
+    CHANNEL_NUMBER = get_dataset_channel_number(CONFIG)
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})", flush=True)
         denoiser = init_model()
@@ -293,7 +291,7 @@ if __name__ == "__main__":
             denoised = denoiser.predict_denoised(scale_f(input), training=False, post_process=True)
             denoised = scale_rev_f(denoised)
             with h5py.File(file_path, mode='w') as h5pyFile:
-                transpose = lambda im : np.transpose(im, [0, 3, 1, 2] if COLOR else [3, 0, 1, 2])
+                transpose = lambda im : np.transpose(im, [0, 3, 1, 2] if CHANNEL_NUMBER>1 else [3, 0, 1, 2])
                 h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/noisy", data=transpose(input))
                 h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/denoised", data=transpose(denoised))
                 if is_eval_it:
