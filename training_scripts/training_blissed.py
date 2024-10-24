@@ -125,7 +125,7 @@ if __name__ == "__main__":
             memory_persistent = isinstance(dataset, MemoryIO)
         channel_name = ds_kwargs.get("channel_name", "raw")
         group_keyword = ds_kwargs.get("keyword", None)
-        n_frames = CONFIG["model_architecture"].pop("n_frames", 0)
+        n_frames = CONFIG["model_architecture"].get("n_frames", 0)
         center_scale = kwargs["center_scale"]
         if dataset_type == "TRAIN":
             rnd = not args.test_data_augmentation and not args.test_predict and CONFIG.get("test_data_augmentation_parameters", {}).get("constant_view", False)
@@ -142,7 +142,7 @@ if __name__ == "__main__":
                                                 channel_keyword=channel_name, train_group_keyword=group_keyword,
                                                 center_scale=center_scale,
                                                 n_frames=n_frames,
-                                                mask=not args.test_predict, #TRAINING_MODE < 2 and
+                                                mask=TRAINING_MODE < 2 and not args.test_predict,
                                                 mask_xaxis_radius = NOISE_CORRELATION_RANGE if not RENOISE_TRAINING else 0,
                                                 step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
             if RENOISE_TRAINING and (not args.test_predict or args.test_data_augmentation):
@@ -324,6 +324,7 @@ if __name__ == "__main__":
             N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0: # perform training
                 collapse_test_limit=CONFIG["training_parameters"].get("collapse_test_limit", 10) if LOAD_WEIGHT_PATH is None else 0
+                #print(f"train it: {train_it[0][0].shape}")
                 train_data = train_denoiser(denoiser, train_it,
                                             n_epochs=N_EPOCHS, start_epoch=START_EPOCH, step_number = STEP_NUMBER,
                                             training_mode=TRAINING_MODE, inject_raw_data_epochs=0,
