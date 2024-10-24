@@ -326,7 +326,7 @@ if __name__ == "__main__":
                 collapse_test_limit=CONFIG["training_parameters"].get("collapse_test_limit", 10) if LOAD_WEIGHT_PATH is None else 0
                 train_data = train_denoiser(denoiser, train_it,
                                             n_epochs=N_EPOCHS, start_epoch=START_EPOCH, step_number = STEP_NUMBER,
-                                            training_mode=TRAINING_MODE,
+                                            training_mode=TRAINING_MODE, inject_raw_data_epochs=0,
                                             learning_rate=LR, learning_rate_min=MIN_LR, epsilon=EPSILON_RANGE[0], epsilon_min=EPSILON_RANGE[1],
                                             collapse_test_iterator=collapse_test_it, collapse_test_limit=collapse_test_limit,
                                             eval_iterator=eval_iterator, eval_center_scale=CENTER_SCALE, eval_data_range=None, eval_period=1, eval_verbose=0,
