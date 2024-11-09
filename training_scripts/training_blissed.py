@@ -128,7 +128,8 @@ if __name__ == "__main__":
         n_frames = CONFIG["model_architecture"].get("n_frames", 0)
         center_scale = kwargs["center_scale"]
         if dataset_type == "TRAIN":
-            rnd = not args.test_data_augmentation and not args.test_predict and CONFIG.get("test_data_augmentation_parameters", {}).get("constant_view", False)
+            rnd = not (args.test_data_augmentation and CONFIG.get("test_data_augmentation_parameters", {}).get( "constant_view", False) or args.test_predict)
+            #print(f"aug rnd: {rnd} ")
             batch_size = ds_kwargs["batch_size"]
             tiling_parameters = ds_kwargs["tiling_parameters"]
             tiling_parameters["augmentation_rotate"] = NOISE_CORRELATION_RANGE is None
@@ -324,10 +325,20 @@ if __name__ == "__main__":
             N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0: # perform training
                 collapse_test_limit=CONFIG["training_parameters"].get("collapse_test_limit", 10) if LOAD_WEIGHT_PATH is None else 0
+                inject_raw_mode = DENOISING_PARAMETERS.get("inject_raw_mode", "disabled")
+                inject_raw_epochs = DENOISING_PARAMETERS.get("inject_raw_epochs", 0)
+                inject_raw_prop = DENOISING_PARAMETERS.get("inject_raw_prop", 0)
+                if inject_raw_mode == "multiframe":
+                    inject_raw_prop = 0
+                elif inject_raw_mode == "random":
+                    assert inject_raw_prop > 0 and inject_raw_prop <= 1, "invalid inject_raw_prop, should be in (0, 1]"
+                else:
+                    inject_raw_epochs = 0
+                print(f"inject raw data: mode={inject_raw_mode} epochs={inject_raw_epochs} prop={inject_raw_prop}")
                 #print(f"train it: {train_it[0][0].shape}")
                 train_data = train_denoiser(denoiser, train_it,
                                             n_epochs=N_EPOCHS, start_epoch=START_EPOCH, step_number = STEP_NUMBER,
-                                            training_mode=TRAINING_MODE, inject_raw_data_epochs=0,
+                                            training_mode=TRAINING_MODE, inject_raw_data_epochs=inject_raw_epochs, inject_raw_data_prop=inject_raw_prop,
                                             learning_rate=LR, learning_rate_min=MIN_LR, epsilon=EPSILON_RANGE[0], epsilon_min=EPSILON_RANGE[1],
                                             collapse_test_iterator=collapse_test_it, collapse_test_limit=collapse_test_limit,
                                             eval_iterator=eval_iterator, eval_center_scale=CENTER_SCALE, eval_data_range=None, eval_period=1, eval_verbose=0,
