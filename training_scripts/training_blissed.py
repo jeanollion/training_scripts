@@ -171,6 +171,7 @@ if __name__ == "__main__":
         arch_type = arch_args.pop("architecture_type", "unetmultiframe").lower()
         nnet_args = arch_args.pop("nnet_parameters", {})
         if arch_type=="unetmultiframe":
+            arch_args.pop("l2_reg", 0)
             dnet = get_dnet_multiframe(n_channels=CHANNEL_NUMBER if CHANNEL_NUMBER>1 else 2 * n_frames + 1, **arch_args)
         elif arch_type=="unet":
             n_filters = arch_args.get("filters", 96)
