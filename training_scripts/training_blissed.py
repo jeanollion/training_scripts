@@ -21,7 +21,7 @@ from ssnb_denoising.models.dnet_n2n import get_dnet_n2n
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm
 from tensorflow.keras.models import load_model
 
-__VERSION__ = '1.0.0'
+__VERSION__ = '1.0.1'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
@@ -326,20 +326,19 @@ if __name__ == "__main__":
             N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0: # perform training
                 collapse_test_limit=CONFIG["training_parameters"].get("collapse_test_limit", 10) if LOAD_WEIGHT_PATH is None else 0
-                inject_raw_mode = DENOISING_PARAMETERS.get("inject_raw_mode", "disabled")
+                inject_raw_mode = ["disabled", "multiframe", "random"].index(DENOISING_PARAMETERS.get("inject_raw_mode", "disabled"))
                 inject_raw_epochs = DENOISING_PARAMETERS.get("inject_raw_epochs", 0)
                 inject_raw_prop = DENOISING_PARAMETERS.get("inject_raw_prop", 0)
-                if inject_raw_mode == "multiframe":
-                    inject_raw_prop = 0
-                elif inject_raw_mode == "random":
-                    assert inject_raw_prop > 0 and inject_raw_prop <= 1, "invalid inject_raw_prop, should be in (0, 1]"
+                if inject_raw_mode > 0:
+                    assert 0 < inject_raw_prop <= 1, "invalid inject_raw_prop, should be in (0, 1]"
                 else:
                     inject_raw_epochs = 0
                 print(f"inject raw data: mode={inject_raw_mode} epochs={inject_raw_epochs} prop={inject_raw_prop}")
                 #print(f"train it: {train_it[0][0].shape}")
                 train_data = train_denoiser(denoiser, train_it,
                                             n_epochs=N_EPOCHS, start_epoch=START_EPOCH, step_number = STEP_NUMBER,
-                                            training_mode=TRAINING_MODE, inject_raw_data_epochs=inject_raw_epochs, inject_raw_data_prop=inject_raw_prop,
+                                            training_mode=TRAINING_MODE,
+                                            inject_raw_mode=inject_raw_mode, inject_raw_data_epochs=inject_raw_epochs, inject_raw_data_prop=inject_raw_prop,
                                             learning_rate=LR, learning_rate_min=MIN_LR, epsilon=EPSILON_RANGE[0], epsilon_min=EPSILON_RANGE[1],
                                             collapse_test_iterator=collapse_test_it, collapse_test_limit=collapse_test_limit,
                                             eval_iterator=eval_iterator, eval_center_scale=CENTER_SCALE, eval_data_range=None, eval_period=1, eval_verbose=0,
