@@ -324,7 +324,6 @@ if __name__ == "__main__":
             #print(f"it[0]: {train_it[0][0].shape}, {train_it[0][1].shape}; channels: {denoiser.input_channels}, {denoiser.input_channels}", flush=True)
             if TRAINING_MODE == 2 and NOISE_CORRELATION_RANGE is None:
                 print("WARNING: masked NNet training without noise correlation")
-            N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0: # perform training
                 collapse_test_limit=CONFIG["training_parameters"].get("collapse_test_limit", 10) if LOAD_WEIGHT_PATH is None else 0
                 inject_raw_mode = ["disabled", "multiframe", "uniform", "gaussian"].index(DENOISING_PARAMETERS.get("inject_raw_mode", "disabled"))
