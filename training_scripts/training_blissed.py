@@ -327,7 +327,7 @@ if __name__ == "__main__":
             N_EPOCHS -= START_EPOCH
             if N_EPOCHS > 0: # perform training
                 collapse_test_limit=CONFIG["training_parameters"].get("collapse_test_limit", 10) if LOAD_WEIGHT_PATH is None else 0
-                inject_raw_mode = ["disabled", "multiframe", "random"].index(DENOISING_PARAMETERS.get("inject_raw_mode", "disabled"))
+                inject_raw_mode = ["disabled", "multiframe", "uniform", "gaussian"].index(DENOISING_PARAMETERS.get("inject_raw_mode", "disabled"))
                 inject_raw_epochs = DENOISING_PARAMETERS.get("inject_raw_epochs", 0)
                 inject_raw_prop = DENOISING_PARAMETERS.get("inject_raw_prop", 0)
                 if inject_raw_mode > 0:
