@@ -184,9 +184,10 @@ if __name__ == "__main__":
             dnet = get_dnet_n2n(depth=depth, input_channels=CHANNEL_NUMBER if CHANNEL_NUMBER>1 else 2 * n_frames + 1, **arch_args)
         else:
             raise ValueError(f"Unknown architecture: {arch_type}")
+        inject_raw_kernel = DENOISING_PARAMETERS.get("inject_raw_kernel", None)
         denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet, nnet_kwargs=nnet_args,
                                  convolution=get_convolution(PSF), renoise_correlation_range=NOISE_CORRELATION_RANGE, noise_conv_regularization=DENOISING_PARAMETERS.get("noise_conv_regularization", 0),
-                                 train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma)
+                                 train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma, inject_raw_kernel=inject_raw_kernel)
         denoiser.flip_invariance_transpose = False
 
         if (args.export_only or args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH):
@@ -333,7 +334,7 @@ if __name__ == "__main__":
                     assert 0 < inject_raw_prop <= 1, "invalid inject_raw_prop, should be in (0, 1]"
                 else:
                     inject_raw_epochs = 0
-                print(f"inject raw data: mode={inject_raw_mode} epochs={inject_raw_epochs} prop={inject_raw_prop}")
+                print(f"inject raw data: mode={inject_raw_mode} epochs={inject_raw_epochs} prop={inject_raw_prop}, kernel={DENOISING_PARAMETERS.get('inject_raw_kernel', None)}")
                 #print(f"train it: {train_it[0][0].shape}")
                 train_data = train_denoiser(denoiser, train_it,
                                             n_epochs=N_EPOCHS, start_epoch=START_EPOCH, step_number = STEP_NUMBER,
