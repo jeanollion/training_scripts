@@ -143,7 +143,7 @@ if __name__ == "__main__":
                                                 channel_keyword=channel_name, train_group_keyword=group_keyword,
                                                 center_scale=center_scale,
                                                 n_frames=n_frames,
-                                                mask=TRAINING_MODE < 2 and not args.test_predict,
+                                                mask=True, #TRAINING_MODE < 2 and not args.test_predict,
                                                 mask_xaxis_radius = NOISE_CORRELATION_RANGE if not RENOISE_TRAINING else 0,
                                                 step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
             if RENOISE_TRAINING and (not args.test_predict or args.test_data_augmentation):
@@ -336,9 +336,10 @@ if __name__ == "__main__":
                     inject_raw_epochs = 0
                 print(f"inject raw data: mode={inject_raw_mode} epochs={inject_raw_epochs} prop={inject_raw_prop}, kernel={DENOISING_PARAMETERS.get('inject_raw_kernel', None)}")
                 #print(f"train it: {train_it[0][0].shape}")
+                mask_nnet_epochs = DENOISING_PARAMETERS.get("mask_nnet_epochs",0)
                 train_data = train_denoiser(denoiser, train_it,
                                             n_epochs=N_EPOCHS, start_epoch=START_EPOCH, step_number = STEP_NUMBER,
-                                            training_mode=TRAINING_MODE,
+                                            training_mode=TRAINING_MODE, mask_nnet_epochs = mask_nnet_epochs,
                                             inject_raw_mode=inject_raw_mode, inject_raw_data_epochs=inject_raw_epochs, inject_raw_data_prop=inject_raw_prop, inject_raw_data_prop_end=inject_raw_prop_end,
                                             learning_rate=LR, learning_rate_min=MIN_LR, epsilon=EPSILON_RANGE[0], epsilon_min=EPSILON_RANGE[1],
                                             collapse_test_iterator=collapse_test_it, collapse_test_limit=collapse_test_limit,
