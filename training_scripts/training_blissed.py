@@ -184,10 +184,9 @@ if __name__ == "__main__":
             dnet = get_dnet_n2n(depth=depth, input_channels=CHANNEL_NUMBER if CHANNEL_NUMBER>1 else 2 * n_frames + 1, **arch_args)
         else:
             raise ValueError(f"Unknown architecture: {arch_type}")
-        inject_raw_kernel = DENOISING_PARAMETERS.get("inject_raw_kernel", None)
         denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet, nnet_kwargs=nnet_args,
                                  convolution=get_convolution(PSF), renoise_correlation_range=NOISE_CORRELATION_RANGE, noise_conv_regularization=DENOISING_PARAMETERS.get("noise_conv_regularization", 0),
-                                 train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma, inject_raw_kernel=inject_raw_kernel)
+                                 train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma)
         denoiser.flip_invariance_transpose = False
 
         if (args.export_only or args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH):
@@ -326,7 +325,7 @@ if __name__ == "__main__":
                 print("WARNING: masked NNet training without noise correlation")
             if N_EPOCHS > 0: # perform training
                 collapse_test_limit=CONFIG["training_parameters"].get("collapse_test_limit", 10) if LOAD_WEIGHT_PATH is None else 0
-                inject_raw_mode = ["disabled", "multiframe", "uniform", "gaussian"].index(DENOISING_PARAMETERS.get("inject_raw_mode", "disabled"))
+                inject_raw_mode = ["disabled", "multiframe", "uniform"].index(DENOISING_PARAMETERS.get("inject_raw_mode", "disabled"))
                 inject_raw_epochs = DENOISING_PARAMETERS.get("inject_raw_epochs", 0)
                 inject_raw_prop = DENOISING_PARAMETERS.get("inject_raw_prop", 0)
                 inject_raw_prop_end = DENOISING_PARAMETERS.get("inject_raw_prop_end", 0)
@@ -334,7 +333,7 @@ if __name__ == "__main__":
                     assert 0 < inject_raw_prop <= 1, "invalid inject_raw_prop, should be in (0, 1]"
                 else:
                     inject_raw_epochs = 0
-                print(f"inject raw data: mode={inject_raw_mode} epochs={inject_raw_epochs} prop={inject_raw_prop}, kernel={DENOISING_PARAMETERS.get('inject_raw_kernel', None)}")
+                print(f"inject raw data: mode={inject_raw_mode} epochs={inject_raw_epochs} prop={inject_raw_prop}")
                 #print(f"train it: {train_it[0][0].shape}")
                 mask_nnet_epochs = DENOISING_PARAMETERS.get("mask_nnet_epochs",0)
                 train_data = train_denoiser(denoiser, train_it,
