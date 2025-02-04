@@ -11,7 +11,7 @@ import copy
 from importlib.metadata import version
 from dataset_iterator.datasetIO import MemoryIO
 from dataset_iterator import extract_tile_random_zoom_function
-from dataset_iterator.utils import transpose_list, is_list, is_keras_3, get_tf_version
+from dataset_iterator.utils import transpose_list, is_list, is_keras_3, get_tf_version, is_dict
 from dataset_iterator.helpers import get_channel_number
 from ssnb_denoising.datasets import get_center_scale
 from ssnb_denoising.training import train_denoiser, get_train_iterator, get_collapse_test_iterator
@@ -67,7 +67,7 @@ if __name__ == "__main__":
 
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; BliSSeD version: {version('ssnb_denoising')}")
     print(f"configuration file found. ")
-    print(f"Deconvolution: {'disabled' if PSF is None else ('kernel' if is_list(PSF) else ('gaussian' if PSF>0 else 'trainable gaussian'))}")
+    print(f"Deconvolution: {'disabled' if PSF is None else ('model' if is_dict(PSF) else ('kernel' if is_list(PSF) else ('gaussian' if PSF>0 else 'trainable gaussian')))}")
     print(f"Noise Correlation Range: {'No correlation' if NOISE_CORRELATION_RANGE is None else NOISE_CORRELATION_RANGE}")
 
     def weighted_avg(a_b_count):

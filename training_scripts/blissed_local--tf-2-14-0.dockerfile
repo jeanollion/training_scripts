@@ -1,4 +1,5 @@
 FROM jeanollion/training_dnn:tf-2.14.0
+RUN pip install MicroscPSF-Py
 RUN pip install SharedArray
 RUN pip install dill
 RUN pip install --upgrade h5py==3.11.0
