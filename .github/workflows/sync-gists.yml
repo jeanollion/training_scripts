@@ -57,4 +57,12 @@ jobs:
           gist_title: training_blissed.py
           gist_description:  Training script for blissed (Blind Self Supervised Denoising)
           github_file: training_scripts/training_blissed.py
-
+      - name: update predict
+        uses: popsiclestick/gist-sync-action@v1.2.0
+        id: sync-predict
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gist_url: https://gist.github.com/jeanollion/7b156bdbd7769f7a0a64b6774550ff4d
+          gist_title: predict.py
+          gist_description: Predict script for DNN
+          github_file: prediction_scripts/predict.py
