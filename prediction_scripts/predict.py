@@ -35,24 +35,28 @@ def make_prediction(model, input_path):
         raise Exception("Model not loaded.")
 
     # handle case with several inputs
-    with h5py.File(input_path, mode='a') as file:
+    with h5py.File(input_path, mode='a', driver=None) as file: # libver='latest'
         paths = [f"inputs/{i}" for i in model.input_names]
+        #print(f"input shapes: {[file[p].shape for p in paths]}", flush=True)
+        #t0 = time.time()
         inputs = [file[p][:] for p in paths]
+        #t1 = time.time()
+        #print(f"inputs loaded: {paths} in {t1-t0}s", flush=True)
+
+        if len(inputs)==1:
+            inputs = inputs[0]
+        outputs = model.predict(inputs)
+        #t2 = time.time()
         for p in paths:
             del file[p]
-        print(f"inputs loaded: {paths}", flush=True)
-
-    if len(inputs)==1:
-        inputs = inputs[0]
-    outputs = model.predict(inputs)
-    if not isinstance(outputs, (list, tuple)):
-        outputs = [outputs]
-
-    with h5py.File(input_path, mode='a') as file:
+        #t3 = time.time()
+        #print(f"inputs erased. erase={t3-t2}s predict={t2-t1}s", flush=True)
+        if not isinstance(outputs, (list, tuple)):
+            outputs = [outputs]
         for n, o in zip(model.output_names, outputs):
             file.create_dataset(f"outputs/{n}", data=o)
     os.rename(input_path, input_path.replace("inputs", "outputs"))
-    print(f"#{len(outputs)} outputs saved", flush=True)
+    #print(f"#{len(outputs)} outputs saved", flush=True)
 
 def scan():
     model = load_model()
