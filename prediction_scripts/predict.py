@@ -4,8 +4,10 @@ import sys
 import json
 import code
 import h5py
-
-model = None
+import time
+import os
+from os import listdir
+from os.path import isfile, join
 
 def set_gpu_options():
     # Get the list of available GPUs
@@ -21,54 +23,51 @@ def set_gpu_options():
             print(e)
 
 def load_model():
-    global model
     set_gpu_options()
-    try:
-        model = tf.keras.models.load_model("/model")
-        print(f"Model loaded successfully. \n#Inputs: {model.input_names} \n#Outputs {model.output_names}", flush=True)
-        return model
-    except Exception as e:
-        print(f"Error loading model: {e}", flush=True)
-        return None
+    model = tf.keras.models.load_model("/model")
+    with open("/data/model_specs.json", 'w') as file:
+        json.dump({"inputs":model.input_names, "outputs":model.output_names}, file)
+    return model
 
-def make_prediction(dataset_path):
-    global model
+def make_prediction(model, input_path):
+    print(f"make prediction on input path: {input_path}", flush=True)
     if model is None:
-        print("Model not loaded.", flush=True)
-        return
+        raise Exception("Model not loaded.")
 
-    try:
-        # handle case with several inputs
-        with h5py.File(dataset_path, mode='a') as file:
-            inputs, paths = get_datasets_and_paths(file, "/inputs")
-            if len(inputs)==1:
-                inputs = inputs[0]
-            outputs = model.predict(inputs)
-            if not isinstance(outputs, (list, tuple)):
-                outputs = [outputs]
-            for p in paths: # erase input images
-                del file[p]
-            for n, o in zip(model.output_names, outputs):
-                file[f"/outputs/{n}"] = o
+    # handle case with several inputs
+    with h5py.File(input_path, mode='a') as file:
+        paths = [f"inputs/{i}" for i in model.input_names]
+        inputs = [file[p][:] for p in paths]
+        for p in paths:
+            del file[p]
+        print(f"inputs loaded: {paths}", flush=True)
 
-        print(f"#{len(outputs)} outputs saved", flush=True)
-    except Exception as e:
-        print(f"Error making prediction: {e}", flush=True)
+    if len(inputs)==1:
+        inputs = inputs[0]
+    outputs = model.predict(inputs)
+    if not isinstance(outputs, (list, tuple)):
+        outputs = [outputs]
 
-def h5py_dataset_iterator(g, prefix=''):
-    for key in g.keys():
-        item = g[key]
-        path = '{}/{}'.format(prefix, key)
-        if isinstance(item, h5py.Dataset): # test for dataset
-            yield (path, item)
-        elif isinstance(item, h5py.Group): # test for group (go down)
-            yield from h5py_dataset_iterator(item, path)
+    with h5py.File(input_path, mode='a') as file:
+        for n, o in zip(model.output_names, outputs):
+            file.create_dataset(f"outputs/{n}", data=o)
+    os.rename(input_path, input_path.replace("inputs", "outputs"))
+    print(f"#{len(outputs)} outputs saved", flush=True)
 
-def get_datasets_and_paths(h5py_file, prefix):
-    paths = [path for (path, ds) in h5py_dataset_iterator(h5py_file, prefix)]
-    datasets = [h5py_file[p] for p in paths]
-    return datasets, paths
+def scan():
+    model = load_model()
+    while True:
+        inputs = [f for f in listdir("/data") if isfile(join("/data", f)) and "inputs" in f]
+        inputs = [f for f in inputs if not f.endswith("lock") and f.replace("h5", "lock") not in inputs]
+        for f in inputs:
+            try:
+                make_prediction(model, join("/data", f))
+            except Exception as e:
+                error = join("/data", f.replace("h5", "error"))
+                with open(error, mode='w') as error_file:
+                    error_file.write(f"error while processing file {f} : {str(e)}")
+                raise e
+        time.sleep(0.1)  # Sleep for a short time before checking again
 
 if __name__ == "__main__":
-    # Start an interactive Python shell
-    code.interact(local=dict(globals(), **locals()))
+    scan()
