@@ -1,8 +1,5 @@
 import tensorflow as tf
-import numpy as np
-import sys
 import json
-import code
 import h5py
 import time
 import os
@@ -22,11 +19,24 @@ def set_gpu_options():
             # Memory growth must be set before GPUs have been initialized
             print(e)
 
+def shape_to_list(shape):
+    try :
+        return tuple(shape.as_list())
+    except ValueError|AttributeError:
+        return "None"
+
 def load_model():
     set_gpu_options()
     model = tf.keras.models.load_model("/model")
+
+    i_shapes = [shape_to_list(i.shape) for i in model.inputs]
+    o_shapes = [shape_to_list(o.shape) for o in model.outputs]
+    specs = {"inputs":model.input_names, "outputs":model.output_names, "input_shapes":i_shapes, "output_shapes":o_shapes }
+    with open("/data/model_specs.lock", 'a'):
+        pass
     with open("/data/model_specs.json", 'w') as file:
-        json.dump({"inputs":model.input_names, "outputs":model.output_names}, file)
+        json.dump(specs, file) #
+    os.remove("/data/model_specs.lock")
     return model
 
 def make_prediction(model, input_path):
@@ -35,9 +45,8 @@ def make_prediction(model, input_path):
         raise Exception("Model not loaded.")
 
     # handle case with several inputs
-    with h5py.File(input_path, mode='a', driver=None) as file: # libver='latest'
+    with h5py.File(input_path, mode='a', driver=None, libver='latest') as file:
         paths = [f"inputs/{i}" for i in model.input_names]
-        #print(f"input shapes: {[file[p].shape for p in paths]}", flush=True)
         #t0 = time.time()
         inputs = [file[p][:] for p in paths]
         #t1 = time.time()
