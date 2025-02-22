@@ -64,7 +64,7 @@ if __name__ == "__main__":
     if NOISE_CORRELATION_RANGE == 0 or (is_list(NOISE_CORRELATION_RANGE) and np.all([n==0 for n in NOISE_CORRELATION_RANGE])):
         NOISE_CORRELATION_RANGE = None
     PSF = DENOISING_PARAMETERS.get("psf", None)
-
+    PSF_SWITCH_EPOCHS = PSF.pop("switch_epochs", -1) if isinstance(PSF, dict) else -1
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; BliSSeD version: {version('ssnb_denoising')}")
     print(f"configuration file found. ")
     print(f"Deconvolution: {'disabled' if PSF is None else ('model' if is_dict(PSF) else ('kernel' if is_list(PSF) else ('gaussian' if PSF>0 else 'trainable gaussian')))}")
@@ -339,6 +339,7 @@ if __name__ == "__main__":
                 train_data = train_denoiser(denoiser, train_it,
                                             n_epochs=N_EPOCHS, start_epoch=START_EPOCH, step_number = STEP_NUMBER,
                                             training_mode=TRAINING_MODE, mask_nnet_epochs = mask_nnet_epochs,
+                                            convolution_switch_epochs=PSF_SWITCH_EPOCHS,
                                             inject_raw_mode=inject_raw_mode, inject_raw_data_epochs=inject_raw_epochs, inject_raw_data_prop=inject_raw_prop, inject_raw_data_prop_end=inject_raw_prop_end,
                                             learning_rate=LR, learning_rate_min=MIN_LR, epsilon=EPSILON_RANGE[0], epsilon_min=EPSILON_RANGE[1],
                                             collapse_test_iterator=collapse_test_it, collapse_test_limit=collapse_test_limit,
