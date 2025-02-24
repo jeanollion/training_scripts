@@ -61,6 +61,9 @@ if __name__ == "__main__":
     RENOISE_TRAINING = DENOISING_PARAMETERS["denoising_mode"] == "RENOISE"
     TRAINING_MODE = (1 if DENOISING_PARAMETERS["mask_nnet"] else 2) if RENOISE_TRAINING else 0
     NOISE_CORRELATION_RANGE = DENOISING_PARAMETERS.get("noise_correlation_range", None)
+    NOISE_CORRELATION_KERNEL = DENOISING_PARAMETERS.get("noise_correlation_kernel", None)
+    if NOISE_CORRELATION_KERNEL is not None:
+        NOISE_CORRELATION_KERNEL = np.array(NOISE_CORRELATION_KERNEL)
     if NOISE_CORRELATION_RANGE == 0 or (is_list(NOISE_CORRELATION_RANGE) and np.all([n==0 for n in NOISE_CORRELATION_RANGE])):
         NOISE_CORRELATION_RANGE = None
     PSF = DENOISING_PARAMETERS.get("psf", None)
@@ -68,8 +71,10 @@ if __name__ == "__main__":
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; BliSSeD version: {version('ssnb_denoising')}")
     print(f"configuration file found. ")
     print(f"Deconvolution: {'disabled' if PSF is None else ('model' if is_dict(PSF) else ('kernel' if is_list(PSF) else ('gaussian' if PSF>0 else 'trainable gaussian')))}")
-    print(f"Noise Correlation Range: {'No correlation' if NOISE_CORRELATION_RANGE is None else NOISE_CORRELATION_RANGE}")
-
+    if NOISE_CORRELATION_KERNEL is None:
+        print(f"Noise Correlation Range: {'No correlation' if NOISE_CORRELATION_RANGE is None else NOISE_CORRELATION_RANGE}")
+    else:
+        print(f"Constant Noise Correlation: {NOISE_CORRELATION_KERNEL.shape}")
     def weighted_avg(a_b_count):
         if len(a_b_count) == 0:
             return None
@@ -132,7 +137,7 @@ if __name__ == "__main__":
             #print(f"aug rnd: {rnd} ")
             batch_size = ds_kwargs["batch_size"]
             tiling_parameters = ds_kwargs["tiling_parameters"]
-            tiling_parameters["augmentation_rotate"] = NOISE_CORRELATION_RANGE is None
+            tiling_parameters["augmentation_rotate"] = NOISE_CORRELATION_RANGE is None and NOISE_CORRELATION_KERNEL is None
             tiling_parameters["perform_augmentation"] = rnd
             tiling_parameters["random_stride"] = rnd
             tiling_parameters["zoom_range"] = [1, 1]
@@ -185,7 +190,7 @@ if __name__ == "__main__":
         else:
             raise ValueError(f"Unknown architecture: {arch_type}")
         denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet, nnet_kwargs=nnet_args,
-                                 convolution=get_convolution(PSF), renoise_correlation_range=NOISE_CORRELATION_RANGE, noise_conv_regularization=DENOISING_PARAMETERS.get("noise_conv_regularization", 0),
+                                 convolution=get_convolution(PSF), noise_correlation_kernel = NOISE_CORRELATION_KERNEL, renoise_correlation_range=NOISE_CORRELATION_RANGE, noise_conv_regularization=DENOISING_PARAMETERS.get("noise_conv_regularization", 0),
                                  train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma)
         denoiser.flip_invariance_transpose = False
 
@@ -205,7 +210,7 @@ if __name__ == "__main__":
 
     def export_model(denoiser, path, avg_flip:bool=False):
         if avg_flip:
-            if NOISE_CORRELATION_RANGE is None: # rotation allowed
+            if NOISE_CORRELATION_RANGE is None and NOISE_CORRELATION_KERNEL is None: # rotation allowed
                 denoiser.set_flip_invariance(True, True, 1)  # if Y and X have different shapes, tensors cannot be concatenated -> n_flip_per_batch=1
             else: # rotation forbidden
                 denoiser.set_flip_invariance(True, False, 1)
@@ -321,7 +326,7 @@ if __name__ == "__main__":
             print("init model...", flush=True)
             denoiser = init_model()
             #print(f"it[0]: {train_it[0][0].shape}, {train_it[0][1].shape}; channels: {denoiser.input_channels}, {denoiser.input_channels}", flush=True)
-            if TRAINING_MODE == 2 and NOISE_CORRELATION_RANGE is None:
+            if TRAINING_MODE == 2 and NOISE_CORRELATION_RANGE is None and NOISE_CORRELATION_KERNEL is None:
                 print("WARNING: masked NNet training without noise correlation")
             if N_EPOCHS > 0: # perform training
                 collapse_test_limit=CONFIG["training_parameters"].get("collapse_test_limit", 10) if LOAD_WEIGHT_PATH is None else 0
