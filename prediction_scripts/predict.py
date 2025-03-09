@@ -28,7 +28,6 @@ def shape_to_list(shape):
 def load_model():
     set_gpu_options()
     model = tf.keras.models.load_model("/model")
-
     i_shapes = [shape_to_list(i.shape) for i in model.inputs]
     o_shapes = [shape_to_list(o.shape) for o in model.outputs]
     specs = {"inputs":model.input_names, "outputs":model.output_names, "input_shapes":i_shapes, "output_shapes":o_shapes }
@@ -68,7 +67,13 @@ def make_prediction(model, input_path):
     #print(f"#{len(outputs)} outputs saved", flush=True)
 
 def scan():
-    model = load_model()
+    try:
+        model = load_model()
+    except Exception as e:
+        error = join("/data", "load_model.error")
+        with open(error, mode='w') as error_file:
+            error_file.write(f"error while loading model : {str(e)}")
+        raise e
     while True:
         inputs = [f for f in listdir("/data") if isfile(join("/data", f)) and "inputs" in f]
         inputs = [f for f in inputs if not f.endswith("lock") and f.replace("h5", "lock") not in inputs]
