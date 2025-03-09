@@ -216,7 +216,8 @@ if __name__ == "__main__":
                 denoiser.set_flip_invariance(True, False, 1)
         else:
             denoiser.set_flip_invariance(False, False, 1)
-        tf.saved_model.save(denoiser.get_inference_model(central_output_channel=True), path)
+        #tf.saved_model.save(denoiser.get_inference_model(central_output_channel=True), path)
+        denoiser.get_inference_model(central_output_channel=True).save(path, include_optimizer=False, save_traces=True, inference=True)
 
     CHANNEL_NUMBER = get_dataset_channel_number(CONFIG)
     if args.export_only:
