@@ -82,7 +82,7 @@ if __name__ == "__main__":
         else:
             a_b_count = np.array(a_b_count)
             a_b_count[:, 2] = a_b_count[:, 2] / np.sum(a_b_count[:, 2])
-            a_b_count[:, 0:1] = a_b_count[:, 0:1] * a_b_count[:, 2]
+            a_b_count[:, :2] = a_b_count[:, :2] * a_b_count[:, 2:]
             a_b_count = np.sum(a_b_count, axis=0)
             return a_b_count[0] / a_b_count[2], a_b_count[1] / a_b_count[2]
 
