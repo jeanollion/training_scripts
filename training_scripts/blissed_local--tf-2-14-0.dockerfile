@@ -3,6 +3,7 @@ RUN pip install MicroscPSF-Py
 RUN pip install SharedArray
 RUN pip install dill
 RUN pip install --upgrade h5py==3.11.0
+RUN pip install imageio imageio-ffmpeg
 COPY dataset_iterator /dataset_iterator
 RUN pip install /dataset_iterator
 COPY ssnb_denoising /ssnb_denoising

@@ -58,8 +58,9 @@ if __name__ == "__main__":
     SHUFFLE = not (args.test_data_augmentation or args.test_predict)
     START_EPOCH = t_p.get("start_epoch", 0)
     DENOISING_PARAMETERS = CONFIG.get("denoising_parameters", {})
+    MOVIE_TRAINING = DENOISING_PARAMETERS["denoising_mode"] == "MOVIE"
     RENOISE_TRAINING = DENOISING_PARAMETERS["denoising_mode"] == "RENOISE"
-    TRAINING_MODE = (1 if DENOISING_PARAMETERS["mask_nnet"] else 2) if RENOISE_TRAINING else 0
+    TRAINING_MODE = (1 if DENOISING_PARAMETERS["mask_nnet"] else 2) if RENOISE_TRAINING else (3 if MOVIE_TRAINING else 0)
     NOISE_CORRELATION_RANGE = DENOISING_PARAMETERS.get("noise_correlation_range", None)
     NOISE_CORRELATION_KERNEL = DENOISING_PARAMETERS.get("noise_correlation_kernel", None)
     if NOISE_CORRELATION_KERNEL is not None:
@@ -129,7 +130,7 @@ if __name__ == "__main__":
             memory_persistent = isinstance(dataset, MemoryIO)
         channel_name = ds_kwargs.get("channel_name", "raw")
         group_keyword = ds_kwargs.get("keyword", None)
-        n_frames = CONFIG["model_architecture"].get("n_frames", 0)
+        n_frames = 1 if MOVIE_TRAINING and not args.test_predict else CONFIG["model_architecture"].get("n_frames", 0)
         center_scale = kwargs["center_scale"]
         if dataset_type == "TRAIN":
             rnd = not (args.test_data_augmentation and CONFIG.get("test_data_augmentation_parameters", {}).get( "constant_view", False) or args.test_predict)
@@ -147,8 +148,9 @@ if __name__ == "__main__":
                                                 channel_keyword=channel_name, train_group_keyword=group_keyword,
                                                 center_scale=center_scale,
                                                 n_frames=n_frames,
-                                                mask=not args.test_predict, #TRAINING_MODE < 2 and not args.test_predict,
-                                                mask_xaxis_radius = NOISE_CORRELATION_RANGE if not RENOISE_TRAINING else 0,
+                                                next_frame=not MOVIE_TRAINING,
+                                                mask=not args.test_predict and not MOVIE_TRAINING, #TRAINING_MODE < 2 and not args.test_predict,
+                                                mask_xaxis_radius = NOISE_CORRELATION_RANGE if not RENOISE_TRAINING and not MOVIE_TRAINING else 0,
                                                 step_number=step_number, batch_size=batch_size, memory_persistent=memory_persistent, shuffle=kwargs.get("shuffle", True))
             if RENOISE_TRAINING and (not args.test_predict or args.test_data_augmentation):
                 collapse_test_iterator = get_collapse_test_iterator(dataset, channel_keyword=channel_name, step_number=2, group_keyword=group_keyword, n_frames=n_frames)
@@ -258,6 +260,9 @@ if __name__ == "__main__":
                     input, output = input
                     if not input_only:
                         outputs.append(output)
+                elif MOVIE_TRAINING:
+                    input, output = np.split(input[0], 2, axis=-1)
+                    outputs.append(output)
                 else:
                     input = input[0]
                 inputs.append(input)
@@ -270,7 +275,7 @@ if __name__ == "__main__":
             if not input_only:
                 output = np.stack(outputs, 0)
                 output = np.transpose(output, transpose_axis)
-                output_name = "MASKED"
+                output_name = "MASKED" if not MOVIE_TRAINING else "previous_frame"
             print(f"writing {1 + (0 if input_only else 1)} x {input.shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
                 h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input", data=input)
