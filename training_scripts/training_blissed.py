@@ -179,18 +179,22 @@ if __name__ == "__main__":
         if arch_type=="unetmultiframe":
             arch_args.pop("l2_reg", 0)
             dnet = get_dnet_multiframe(n_channels=CHANNEL_NUMBER if CHANNEL_NUMBER>1 else 2 * n_frames + 1, **arch_args)
+            dnet_rev = None if not MOVIE_TRAINING else get_dnet_multiframe(n_channels=CHANNEL_NUMBER if CHANNEL_NUMBER > 1 else 2 * n_frames + 1, name="dnet_multiframe_rev", **arch_args)
         elif arch_type=="unet":
             n_filters = arch_args.get("filters", 96)
             depth = arch_args.get("n_downsampling", 3)
             skip = arch_args.get("skip_connection_mode", "NORMAL").lower()
             n_conv1x1 = arch_args.get("n_tail_conv", 2)
             dnet = get_dnet(n_filters=n_filters, depth = depth, skip_sg = skip=="stop_gradient", skip_omit=[0] if skip=="omit" else None, n_conv1x1=n_conv1x1, input_channels=CHANNEL_NUMBER if CHANNEL_NUMBER>1 else 2 * n_frames + 1)
+            dnet_rev = None if not MOVIE_TRAINING else get_dnet(n_filters=n_filters, depth=depth, skip_sg=skip == "stop_gradient", skip_omit=[0] if skip == "omit" else None, n_conv1x1=n_conv1x1, input_channels=CHANNEL_NUMBER if CHANNEL_NUMBER > 1 else 2 * n_frames + 1, name = "dnet_rev")
         elif arch_type == "unetn2n":
             depth = arch_args.pop("n_downsampling", 3)
             dnet = get_dnet_n2n(depth=depth, input_channels=CHANNEL_NUMBER if CHANNEL_NUMBER>1 else 2 * n_frames + 1, **arch_args)
+            dnet_rev = None if not MOVIE_TRAINING else get_dnet_n2n(depth=depth, input_channels=CHANNEL_NUMBER if CHANNEL_NUMBER > 1 else 2 * n_frames + 1, name = "dnet_n2n_rev", **arch_args)
         else:
             raise ValueError(f"Unknown architecture: {arch_type}")
-        denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet, nnet_kwargs=nnet_args,
+        print(f"using dnet_rev: {dnet_rev is not None}")
+        denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet, nnet_kwargs=nnet_args, dnet_rev=dnet_rev,
                                  convolution=get_convolution(PSF), noise_correlation_kernel = NOISE_CORRELATION_KERNEL, renoise_correlation_range=NOISE_CORRELATION_RANGE, noise_conv_regularization=DENOISING_PARAMETERS.get("noise_conv_regularization", 0),
                                  train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma)
         denoiser.flip_invariance_transpose = False
