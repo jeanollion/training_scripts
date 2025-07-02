@@ -20,7 +20,7 @@ from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, get_shm_info, get_shm_nfiles
 
-__VERSION__ = '1.1.1'
+__VERSION__ = '1.1.2'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
@@ -62,11 +62,45 @@ if __name__ == "__main__":
     print(f"configuration file found. ")
     # print(f"EDM derloss: {EDM_DERIVATIVE_LOSS}, GCDM derloss: {GCDM_DERIVATIVE_LOSS}", flush=True)
 
+
+    def get_input_channel_and_label(config, return_names:bool = False):
+        nchan, nlabel = [], []
+        cnames, lnames = None, None
+        for i, ds_conf in enumerate(config["dataset_list"]):
+            channel_names = ds_conf.get("channel_name", "raw")
+            if not isinstance(channel_names, (list, tuple)):
+                channel_names = [channel_names]
+            label_names = ds_conf.get("label_name", [])
+            if not isinstance(label_names, (list, tuple)):
+                label_names = [label_names]
+            nchan.append(len(channel_names))
+            nlabel.append(len(label_names))
+            if i==0 and return_names:
+                cnames = channel_names
+                lnames = label_names
+        assert np.all(np.array(nchan) == nchan[0]), f"all datasets must have same number of input channels, got {nchan}"
+        assert np.all(np.array(nlabel) == nlabel[0]), f"all datasets must have same number of input labels, got {nlabel}"
+        if return_names:
+            return cnames, lnames
+        else:
+            return nchan[0], nlabel[0]
+
     def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
         data_aug_params = ds_conf.get("data_augmentation", {})
         dataset_features = ds_conf.get("dataset_features", {})
         arch_params = config["model_architecture"]
-        channel_name = ds_conf.get("channel_name", "raw")
+        channel_names = ds_conf.get("channel_name", "raw")
+        if not isinstance(channel_names, (list, tuple)):
+            channel_names = [channel_names]
+        elif isinstance(channel_names, tuple):
+            channel_names = list(channel_names)
+        channel_names = [ f"/{cn}" if cn[0]!="/" else cn for cn in channel_names ]
+        label_names = ds_conf.get("label_name", [])
+        if not isinstance(label_names, (list, tuple)):
+            label_names = [label_names]
+        elif isinstance(label_names, tuple):
+            label_names = list(label_names)
+        label_names = [f"/{cn}" if cn[0] != "/" else cn for cn in label_names]
         if dataset is None:
             dataset = ds_conf["path"]
             memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
@@ -79,10 +113,15 @@ if __name__ == "__main__":
         else:
             extract_tiles_fun = None
         scaling_parameters = data_aug_params.get("scaling_parameters", {})
-        scaling_parameters["dataset"] = dataset
-        scaling_parameters["channel_name"] = channel_name
+        if not isinstance(scaling_parameters, (list, tuple)):
+            scaling_parameters = [scaling_parameters]
+        if len(scaling_parameters) == 1 and len(channel_names) > 1 :
+            scaling_parameters = [copy.deepcopy(scaling_parameters[0]) for _ in range(len(channel_names))]
+        for sp, cname in zip(scaling_parameters, channel_names):
+            sp["dataset"] = dataset
+            sp["channel_name"] = cname
         affine_transform_parameters = data_aug_params.get("affine_transform_parameters", None)
-        data_generator = get_image_data_generator(scaling_parameters=scaling_parameters, affine_transform_parameters=affine_transform_parameters)
+        data_generators = [get_image_data_generator(scaling_parameters=sp, affine_transform_parameters=affine_transform_parameters) for sp in scaling_parameters]
         affine_transform_parameters_mask = None if affine_transform_parameters is None else {**affine_transform_parameters, "interpolation_order": 0}
         mask_generator = get_image_data_generator(scaling_parameters=[], affine_transform_parameters=affine_transform_parameters_mask)
         pp_fun_list = []
@@ -99,11 +138,12 @@ if __name__ == "__main__":
                                aug_remove_prob=data_aug_params.get("static_probability", 0.01),
                                next=arch_params.get("next", True),
                                center_mode=dataset_features.get("center_mode", "MEDOID"),
+                               center_distance_mode=dataset_features.get("center_distance_mode", "GEODESIC"),
                                frame_window=arch_params.get("frame_window", 3),
-                               image_data_generators=[data_generator, mask_generator],
+                               image_data_generators=[data_generators[0], mask_generator] + data_generators[1:],
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                                channels_postprocessing_function=pp_fun, verbose=False and args.test_data_augmentation, memory_persistent=memory_persistent)
-        return DyDxIterator(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_conf.get("keyword", None),
+        return DyDxIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:], input_label_keywords=label_names, group_keyword=ds_conf.get("keyword", None),
                             batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=EDM_DERIVATIVE_LOSS,
                             aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
                             **iterator_params)
@@ -115,7 +155,10 @@ if __name__ == "__main__":
         next = arch_args.pop("next", True)
         shape = config["dataset_parameters"]["input_shape"]
         input_shape = [None if s <= 0 else s for s in shape]
-        arch_args["spatial_dimensions"] = input_shape
+        arch_args["spatial_dimensions"] = input_shape.copy()
+        nchan, nlabel = get_input_channel_and_label(config)
+        if nchan > 1 or nlabel>0:
+            input_shape = input_shape + [nchan + nlabel * 2] # for each label EDM and GDCM are added
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=EDM_DERIVATIVE_LOSS, gcdm_derivative_loss=GCDM_DERIVATIVE_LOSS)
         if args.export_only or args.compute_metrics and os.path.exists(WEIGHT_PATH):
@@ -200,14 +243,30 @@ if __name__ == "__main__":
             train_it.close()
             input = np.stack(inputs, 0)
             transpose_axis = [4, 0, 1, 2, 3]
-            input = np.transpose(input, transpose_axis)
+            cnames, lnames = get_input_channel_and_label(config, True)
+            if len(cnames) + len(lnames) > 1:
+                inputs = []
+                input_names = []
+                for i in range(0, len(cnames)):
+                    inputs.append(input[..., i, :])
+                    input_names.append(cnames[i])
+                for i in range(len(lnames)):
+                    inputs.append(input[..., i+len(cnames), :])
+                    input_names.append(f"{cnames[i]}_EDM")
+                    inputs.append(input[..., i + len(cnames) + 1, :])
+                    input_names.append(f"{cnames[i]}_GCDM")
+                inputs = [np.transpose(input, transpose_axis) for input in inputs]
+            else:
+                inputs = [np.transpose(input, transpose_axis)]
+                input_names = cnames
             if not input_only:
                 outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
                 outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
                 output_name = ["EDM", "GCDM", "dY", "dX", "Category"]
-            print(f"writing {len(outputs)+1} x {input.shape} to file: {file_path}", flush=True)
+            print(f"writing {len(outputs)+len(inputs)} x {input[0].shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
-                h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input", data=input)
+                for i, o in enumerate(inputs):
+                    h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input_{i}_{input_names[i]}", data=o)
                 if not input_only:
                     for i, o in enumerate(outputs):
                         h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output_{i}_{output_name[i]}", data=o)

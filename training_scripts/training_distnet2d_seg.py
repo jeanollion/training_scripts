@@ -10,6 +10,9 @@ import skfmm
 import edt
 import warnings
 from importlib.metadata import version
+
+from scipy.ndimage import center_of_mass
+
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
 from dataset_iterator.datasetIO import MemoryIO
 from dataset_iterator import extract_tile_random_zoom_function
@@ -17,12 +20,14 @@ from dataset_iterator.utils import transpose_list
 from dataset_iterator import MultiChannelIterator, TrackingIterator
 from dataset_iterator.keras_callbacks import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
+
+from distnet_2d.data.center_edm import compute_edm
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d_seg import get_distnet_2d_seg
 from distnet_2d.data.medoid import get_medoid
 
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info
-__VERSION__ = "1.1.0"
+__VERSION__ = "1.1.2"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -72,7 +77,11 @@ if __name__ == "__main__":
         timelapse = config["model_architecture"].get("timelapse", False)
         channel_number = config["model_architecture"].get("channel_number", 1)
         data_aug_params = ds_conf.get("data_augmentation", {})
-        channel_name = ds_conf.get("channel_name", "raw")
+        channel_names = ds_conf.get("channel_name", "raw")
+        if not isinstance(channel_names, (list, tuple)):
+            channel_names = [channel_names]
+        elif isinstance(channel_names, tuple):
+            channel_names = list(channel_names)
         if dataset is None:
             dataset = ds_conf["path"]
             memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
@@ -85,10 +94,13 @@ if __name__ == "__main__":
         else:
             extract_tiles_fun = None
         scaling_parameters = data_aug_params.get("scaling_parameters", {})
-        scaling_parameters["dataset"] = dataset
-        scaling_parameters["channel_name"] = channel_name
+        if not isinstance(scaling_parameters, (list, tuple)):
+            scaling_parameters = [scaling_parameters]
+        for sp, cname in zip(scaling_parameters, channel_names):
+            sp["dataset"] = dataset
+            sp["channel_name"] = cname
         affine_transform_parameters = data_aug_params.get("affine_transform_parameters", None)
-        data_generator = get_image_data_generator(scaling_parameters=scaling_parameters, affine_transform_parameters=affine_transform_parameters)
+        data_generators = [get_image_data_generator(scaling_parameters=sp, affine_transform_parameters=affine_transform_parameters) for sp in scaling_parameters]
         affine_transform_parameters_mask = None if affine_transform_parameters is None else {**affine_transform_parameters, "interpolation_order": 0}
         mask_generator = get_image_data_generator(scaling_parameters=[], affine_transform_parameters=affine_transform_parameters_mask)
         illumination_parameters = data_aug_params.get("illumination_parameters", None)
@@ -97,15 +109,27 @@ if __name__ == "__main__":
             pp_fun = data_generator_to_channel_postprocessing_fun(illumination_gen, [0])
         else:
             pp_fun = None
-        #edm_fun = lambda labels: edt.edt(labels, black_border=False)
+        exclude_void = ds_conf.get("exclude_empty_frames", False)
+        dataset_features = ds_conf.get("dataset_features", {})
+        use_gdcm = dataset_features.get("center_distance_mode", "GEODESIC") == "GEODESIC"
+        center_mode = dataset_features.get("center_mode", "MEDOID")
+        assert center_mode in ["MEDOID", "GEOMETRICAL"]
+
         def edm_fun(labels):
             edm = edt.edt(labels, black_border=False)
             edm[labels==0] = -1
             return edm
-        def gcdm_fun(label):
+
+        def get_centers(label):
             all_labels = np.unique(label)
             all_labels = [int(round(l)) for l in all_labels if l != 0]
-            centers = [get_medoid(*np.where(label == l)) for l in all_labels]
+            if center_mode == "MEDOID":
+                return [get_medoid(*np.where(label == l)) for l in all_labels]
+            else:
+                return center_of_mass(label, label, all_labels)
+
+        def gcdm_fun(label):
+            centers = get_centers(label)
             count = 0
             m = np.ones_like(label)
             for center in centers:
@@ -116,24 +140,30 @@ if __name__ == "__main__":
                 m = ma.masked_array(m, ~label.astype(bool))
                 return skfmm.distance(m).astype(np.float32)
             else:
-                return np.zeros_like(label)
+                return np.zeros_like(label, dtype=np.float32)
+
+        def ecdm_fun(label):
+            centers = get_centers(label)
+            edcm = np.zeros_like(label, dtype=np.float32)
+            compute_edm(centers, edcm)
+            return edcm
+
         def apply_batchwise(fun):
             def result_fun(batch):
                 images = [fun(batch[b,...,0]) for b in range(batch.shape[0])]
                 batch_res = np.stack(images, 0)
                 return np.expand_dims(batch_res, -1)
             return result_fun
-        exclude_void = ds_conf.get("exclude_empty_frames", False)
-        iterator_params = dict(dataset=dataset, channel_keywords=[channel_name, '/regionLabels'], group_keyword=ds_conf.get("keyword", None),
+        iterator_params = dict(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:], group_keyword=ds_conf.get("keyword", None),
                                input_channels=[0],
                                output_channels=[1, 1],
                                mask_channels=[1],
                                batch_size=batch_size, step_number=step_number,
                                extract_tile_function=extract_tiles_fun, shuffle=kwargs.get("shuffle", True),
-                               image_data_generators=[data_generator, mask_generator],
+                               image_data_generators=[data_generators[0], mask_generator] + data_generators[1:],
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                                channels_postprocessing_function=pp_fun,
-                               output_postprocessing_functions=[apply_batchwise(edm_fun), apply_batchwise(gcdm_fun)],
+                               output_postprocessing_functions=[apply_batchwise(edm_fun), apply_batchwise(gcdm_fun if use_gdcm else ecdm_fun)],
                                void_mask_proportion=[0, 0] if exclude_void else None,
                                memory_persistent=memory_persistent)
         # either timelapse or multichannel iterator
