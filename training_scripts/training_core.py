@@ -5,6 +5,7 @@ from dataset_iterator import ConcatIterator
 from dataset_iterator.utils import transpose_list, is_null, ensure_multiplicity, is_list
 from dataset_iterator.helpers import get_optimal_tiling
 from dataset_iterator.datasetIO import get_datasetIO, MemoryIO
+import numpy as np
 
 
 def merge_dicts(primary_dict, secondary_dict):
@@ -233,3 +234,26 @@ def get_shm_info(verbose:int=1):
                 print(f"Could not extract shm info. Command output: \n{command.stdout}", flush=True)
             values = None
     return values
+
+
+def get_input_channel_and_label(config, return_names:bool = False):
+    nchan, nlabel = [], []
+    cnames, lnames = None, None
+    for i, ds_conf in enumerate(config["dataset_list"]):
+        channel_names = ds_conf.get("channel_name", "raw")
+        if not isinstance(channel_names, (list, tuple)):
+            channel_names = [channel_names]
+        label_names = ds_conf.get("label_name", [])
+        if not isinstance(label_names, (list, tuple)):
+            label_names = [label_names]
+        nchan.append(len(channel_names))
+        nlabel.append(len(label_names))
+        if i==0 and return_names:
+            cnames = channel_names
+            lnames = label_names
+    assert np.all(np.array(nchan) == nchan[0]), f"all datasets must have same number of input channels, got {nchan}"
+    assert np.all(np.array(nlabel) == nlabel[0]), f"all datasets must have same number of input labels, got {nlabel}"
+    if return_names:
+        return cnames, lnames
+    else:
+        return nchan[0], nlabel[0]

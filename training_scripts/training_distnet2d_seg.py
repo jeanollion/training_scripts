@@ -1,4 +1,5 @@
 import argparse
+import copy
 import os, resource
 import random
 import numpy as np
@@ -25,8 +26,11 @@ from distnet_2d.data.center_edm import compute_edm
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d_seg import get_distnet_2d_seg
 from distnet_2d.data.medoid import get_medoid
+from distnet_2d.utils.helpers import flatten_list
 
-from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info
+from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info, \
+    get_input_channel_and_label, chain_pp_fun
+
 __VERSION__ = "1.1.2"
 
 parser = argparse.ArgumentParser()
@@ -74,14 +78,20 @@ if __name__ == "__main__":
 
 
     def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
-        timelapse = config["model_architecture"].get("timelapse", False)
-        channel_number = config["model_architecture"].get("channel_number", 1)
         data_aug_params = ds_conf.get("data_augmentation", {})
         channel_names = ds_conf.get("channel_name", "raw")
         if not isinstance(channel_names, (list, tuple)):
             channel_names = [channel_names]
         elif isinstance(channel_names, tuple):
             channel_names = list(channel_names)
+        channel_names = [f"/{cn}" if cn[0] != "/" else cn for cn in channel_names]
+        label_names = ds_conf.get("label_name", [])
+        if not isinstance(label_names, (list, tuple)):
+            label_names = [label_names]
+        elif isinstance(label_names, tuple):
+            label_names = list(label_names)
+        label_names = [f"/{cn}" if cn[0] != "/" else cn for cn in label_names]
+        category_number = config["model_architecture"].get("category_number", 0)
         if dataset is None:
             dataset = ds_conf["path"]
             memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
@@ -101,50 +111,66 @@ if __name__ == "__main__":
             sp["channel_name"] = cname
         affine_transform_parameters = data_aug_params.get("affine_transform_parameters", None)
         data_generators = [get_image_data_generator(scaling_parameters=sp, affine_transform_parameters=affine_transform_parameters) for sp in scaling_parameters]
+        data_gen_input_label = [ get_image_data_generator(scaling_parameters=[], affine_transform_parameters=affine_transform_parameters) ] * len(label_names)
         affine_transform_parameters_mask = None if affine_transform_parameters is None else {**affine_transform_parameters, "interpolation_order": 0}
         mask_generator = get_image_data_generator(scaling_parameters=[], affine_transform_parameters=affine_transform_parameters_mask)
-        illumination_parameters = data_aug_params.get("illumination_parameters", None)
-        if illumination_parameters is not None:
-            illumination_gen = get_image_data_generator(illumination_parameters=illumination_parameters)
-            pp_fun = data_generator_to_channel_postprocessing_fun(illumination_gen, [0])
-        else:
-            pp_fun = None
+        # perform illumination at the end: after elastic deform
+        illumination_parameters = copy.deepcopy(data_aug_params.get("illumination_transform",  [data_aug_params.get("illumination_parameters", None)]))
+        ill_fun_list = []
+        for cidx, ip in enumerate(illumination_parameters):
+            if ip is not None and ip.pop("mode", True):
+                illumination_gen = get_image_data_generator(illumination_parameters=ip)
+                ill_fun_list.append( data_generator_to_channel_postprocessing_fun(illumination_gen,[0 if cidx ==0 else cidx + 1])) # channel #1 is reserved to labels
+        illu_fun = chain_pp_fun(ill_fun_list) if len(ill_fun_list) > 0 else None
         exclude_void = ds_conf.get("exclude_empty_frames", False)
-        dataset_features = ds_conf.get("dataset_features", {})
-        use_gdcm = dataset_features.get("center_distance_mode", "GEODESIC") == "GEODESIC"
-        center_mode = dataset_features.get("center_mode", "MEDOID")
-        assert center_mode in ["MEDOID", "GEOMETRICAL"]
+        seg_args = config.get("segmentation", {})
+        use_gdcm = seg_args.get("center_distance_mode", "GEODESIC") == "GEODESIC"
+        center_mode = seg_args.get("center_mode", "MEDOID")
+        scale_edm = seg_args.get("scale_edm", False)
+        assert center_mode in ["MEDOID", "GEOMETRICAL"], f"Invalid center mode = {center_mode} should be either MEDOID or GEOMETRICAL"
 
         def edm_fun(labels):
             edm = edt.edt(labels, black_border=False)
             edm[labels==0] = -1
             return edm
 
-        def get_centers(label):
-            all_labels = np.unique(label)
+        def edm_fun_out(labels):
+            edm = edm_fun(labels)
+            if scale_edm:
+                all_labels = np.unique(labels)
+                all_labels = [l for l in all_labels if l != 0]
+                for l in all_labels:
+                    if l!=0:
+                        mask = labels == l
+                        edm_masked = edm[mask]
+                        edm[mask] = edm_masked / np.max(edm_masked)
+            return edm
+
+        def get_centers(labels):
+            all_labels = np.unique(labels)
             all_labels = [int(round(l)) for l in all_labels if l != 0]
             if center_mode == "MEDOID":
-                return [get_medoid(*np.where(label == l)) for l in all_labels]
+                return [get_medoid(*np.where(labels == l)) for l in all_labels]
             else:
-                return center_of_mass(label, label, all_labels)
+                return center_of_mass(labels, labels, all_labels)
 
-        def gcdm_fun(label):
-            centers = get_centers(label)
+        def gcdm_fun(labels):
+            centers = get_centers(labels)
             count = 0
-            m = np.ones_like(label)
+            m = np.ones_like(labels)
             for center in centers:
                 if not (isnan(center[0]) or isnan(center[1])):
                     m[int(round(center[0])), int(round(center[1]))] = 0
                     count += 1
             if count > 0:
-                m = ma.masked_array(m, ~label.astype(bool))
+                m = ma.masked_array(m, ~labels.astype(bool))
                 return skfmm.distance(m).astype(np.float32)
             else:
-                return np.zeros_like(label, dtype=np.float32)
+                return np.zeros_like(labels, dtype=np.float32)
 
-        def ecdm_fun(label):
-            centers = get_centers(label)
-            edcm = np.zeros_like(label, dtype=np.float32)
+        def ecdm_fun(labels):
+            centers = get_centers(labels)
+            edcm = np.zeros_like(labels, dtype=np.float32)
             compute_edm(centers, edcm)
             return edcm
 
@@ -154,43 +180,65 @@ if __name__ == "__main__":
                 batch_res = np.stack(images, 0)
                 return np.expand_dims(batch_res, -1)
             return result_fun
-        iterator_params = dict(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:], group_keyword=ds_conf.get("keyword", None),
-                               input_channels=[0],
-                               output_channels=[1, 1],
-                               mask_channels=[1],
+
+        label_idx = len(channel_names) + 1
+        label_cidx = [label_idx + ci for ci in range(len(label_names))]
+        cat_idx = len(channel_names) + 1 + len(label_names)
+
+        def pp_fun(batch_by_channel):
+            if illu_fun is not None:
+                illu_fun(batch_by_channel)
+            if category_number > 1:
+                categoryArray = batch_by_channel['arrays'][0]
+                labelIm = batch_by_channel[1]
+                catIm = np.zeros_like(labelIm)
+                for b in range(labelIm.shape[0]):
+                    lIm = labelIm[b]
+                    cIm = catIm[b]
+                    cA = categoryArray[b]
+                    if len(cA.shape) == 3:
+                        cA = cA[:,0,0]
+                    elif len(cA.shape) == 2:
+                        cA = cA[:,0]
+                    all_labels = np.unique(lIm)
+                    for l in all_labels:
+                        if l != 0:
+                            cIm[ lIm == l ] = cA[int(round(l)) - 1] + 1
+                batch_by_channel[cat_idx] = catIm
+        print(f"channels : {[channel_names[0], '/regionLabels'] + channel_names[1:] + label_names} inputs: {[0] + [1 + ci for ci in range(1, len(channel_names))] + [ci for ci in label_cidx for _ in range(2)]} outputs: {[1, 1, cat_idx] if category_number > 1 else [1, 1]} mask: {[1] + label_cidx}")
+        iterator_params = dict(dataset=dataset,
+                               channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:] + label_names,
+                               array_keywords = ["/category"] if category_number > 1 else None,
+                               group_keyword=ds_conf.get("keyword", None),
+                               input_channels=[0] + [1 + ci for ci in range(1, len(channel_names))] + [ci for ci in label_cidx for _ in range(2)], # edm / cdm
+                               output_channels=[1, 1, cat_idx] if category_number > 1 else [1, 1], # cat_idx = placeholder for category computed in post_processing fun
+                               mask_channels=[1] + label_cidx,
                                batch_size=batch_size, step_number=step_number,
                                extract_tile_function=extract_tiles_fun, shuffle=kwargs.get("shuffle", True),
-                               image_data_generators=[data_generators[0], mask_generator] + data_generators[1:],
+                               image_data_generators=[data_generators[0], mask_generator] + data_generators[1:] + data_gen_input_label,
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                                channels_postprocessing_function=pp_fun,
-                               output_postprocessing_functions=[apply_batchwise(edm_fun), apply_batchwise(gcdm_fun if use_gdcm else ecdm_fun)],
+                               input_postprocessing_functions = [None]*len(channel_names) + [apply_batchwise(edm_fun) if idx==0 else apply_batchwise(gcdm_fun) for _ in label_cidx for idx in range(2)],
+                               output_postprocessing_functions=[apply_batchwise(edm_fun_out), apply_batchwise(gcdm_fun if use_gdcm else ecdm_fun)] + ([None] if category_number > 1 else []),
                                void_mask_proportion=[0, 0] if exclude_void else None,
                                memory_persistent=memory_persistent)
-        # either timelapse or multichannel iterator
-        if not timelapse:
-            return MultiChannelIterator(**iterator_params)
-        else:
-            return TrackingIterator(
-                channels_prev=[True, False],
-                channels_next=[True, False],
-                n_frames=(channel_number-1)//2,
-                frame_subsampling=data_aug_params.get("frame_subsampling", 1),
-                aug_all_frames=True,
-                **iterator_params)
+        return MultiChannelIterator(**iterator_params)
+
 
     def init_model():
         arch_args = config["model_architecture"].copy()
-        shared_encoder = arch_args.pop("shared_encoder", False)
-        skip_connections = arch_args.pop("skip_connections", False)
-        channel_number = arch_args.pop("channel_number", 1)
-        timelapse = arch_args.pop("timelapse", False)
+        skip_connections = arch_args.pop("skip_connections", True)
+        nchan, nlabel = get_input_channel_and_label(config)
+        n_inputs = nchan + 2 * nlabel # for each label: edm and gcdm are computed
         if arch_args.get("architecture_type", "blend").lower() == "enc_dec":
             arch_args["architecture_type"] = "blend" # enc_dec is similar to distnet2d blend architecture, wihtout the blending part
         shape = config["dataset_parameters"]["input_shape"]
         input_shape = [None if s <= 0 else s for s in shape]
         arch_args["spatial_dimensions"] = input_shape
+        category_number = arch_args.pop("category_number", 0)
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
-        model = get_distnet_2d_seg(input_channels=channel_number, config=arch, skip_connections=skip_connections, shared_encoder=shared_encoder, accum_steps=1, l2_reg=0)
+        cdm_loss_radius = config.get("segmentation", {}).get("cdm_loss_radius", 0)
+        model = get_distnet_2d_seg(n_inputs=n_inputs, config=arch, skip_connections=skip_connections, shared_encoder=False, accum_steps=1, l2_reg=0, category_number=category_number, cdm_loss_radius=cdm_loss_radius)
         if args.export_only:
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
@@ -232,19 +280,29 @@ if __name__ == "__main__":
                 if not input_only:
                     outputs.append(output)
                 print(f"{i + 1}/{n_iterations}", flush=True)
-            input = np.stack(inputs, 0)
             transpose_axis = [4, 0, 1, 2, 3]
-            input = np.transpose(input, transpose_axis)
+            cnames, lnames = get_input_channel_and_label(config, return_names=True)
+            if isinstance(inputs[0], (list, tuple)):
+                inputs = transpose_list(inputs)  # (n_it, n_in) -> (n_in, n_it)
+                inputs = [np.transpose(np.stack(i, 0), transpose_axis) for i in inputs]
+                input_names = cnames + [f"{ln}_{'EDM' if i==0 else 'CDM'}" for ln in lnames for i in range(2)]
+            else:
+                inputs = np.stack(inputs, 0)
+                inputs = [np.transpose(inputs, transpose_axis)]
+                input_names = cnames
+
             if not input_only:
                 outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
                 outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
-                output_name = ["EDM", "GCDM"]
-            print(f"writing {len(outputs)+1} x {input.shape} to file: {file_path}", flush=True)
+                output_names = ["EDM", "CDM"] if len(outputs)==2 else ["EDM", "CDM", "Category"]
+
+            print(f"writing {len(outputs)+len(inputs)} x {inputs[0].shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
-                h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input", data=input)
+                for i, o in enumerate(inputs):
+                    h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input_{i}_{input_names[i]}", data=o)
                 if not input_only:
                     for i, o in enumerate(outputs):
-                        h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output_{i}_{output_name[i]}", data=o)
+                        h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output_{i}_{output_names[i]}", data=o)
         else:
             # init model
             print("init model...")

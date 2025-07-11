@@ -14,11 +14,13 @@ from dataset_iterator.hard_sample_mining import HardSampleMiningCallback, comput
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 from dataset_iterator.keras_callbacks import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2
 from distnet_2d.data import DyDxIterator
+from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.metrics_tf import get_metrics_fun
-from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, get_shm_info, get_shm_nfiles
+from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
+    get_shm_info, get_shm_nfiles, get_input_channel_and_label
 
 __VERSION__ = '1.1.2'
 parser = argparse.ArgumentParser()
@@ -57,38 +59,17 @@ if __name__ == "__main__":
     SHUFFLE = not args.test_data_augmentation
     START_EPOCH = t_p.get("start_epoch", 0)
     EDM_DERIVATIVE_LOSS = True
-    GCDM_DERIVATIVE_LOSS = True
+    CDM_DERIVATIVE_LOSS = True
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
     print(f"configuration file found. ")
-    # print(f"EDM derloss: {EDM_DERIVATIVE_LOSS}, GCDM derloss: {GCDM_DERIVATIVE_LOSS}", flush=True)
+    # print(f"EDM derloss: {EDM_DERIVATIVE_LOSS}, CDM derloss: {CDM_DERIVATIVE_LOSS}", flush=True)
 
-
-    def get_input_channel_and_label(config, return_names:bool = False):
-        nchan, nlabel = [], []
-        cnames, lnames = None, None
-        for i, ds_conf in enumerate(config["dataset_list"]):
-            channel_names = ds_conf.get("channel_name", "raw")
-            if not isinstance(channel_names, (list, tuple)):
-                channel_names = [channel_names]
-            label_names = ds_conf.get("label_name", [])
-            if not isinstance(label_names, (list, tuple)):
-                label_names = [label_names]
-            nchan.append(len(channel_names))
-            nlabel.append(len(label_names))
-            if i==0 and return_names:
-                cnames = channel_names
-                lnames = label_names
-        assert np.all(np.array(nchan) == nchan[0]), f"all datasets must have same number of input channels, got {nchan}"
-        assert np.all(np.array(nlabel) == nlabel[0]), f"all datasets must have same number of input labels, got {nlabel}"
-        if return_names:
-            return cnames, lnames
-        else:
-            return nchan[0], nlabel[0]
 
     def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
         data_aug_params = ds_conf.get("data_augmentation", {})
-        dataset_features = ds_conf.get("dataset_features", {})
+        seg_args = config.get("segmentation", {})
         arch_params = config["model_architecture"]
+        category_number = arch_params.get("category_number", 0)
         channel_names = ds_conf.get("channel_name", "raw")
         if not isinstance(channel_names, (list, tuple)):
             channel_names = [channel_names]
@@ -128,22 +109,25 @@ if __name__ == "__main__":
         swim1D_params = data_aug_params.get("swim1d_parameters", None)
         if swim1D_params is not None:
             pp_fun_list.append(get_swim1d_function(1, swim1D_params.get("distance", 50), swim1D_params.get("min_gap", 3), swim1D_params.get("closed_end", True)))
-        illumination_parameters = data_aug_params.get("illumination_parameters", None)
-        if illumination_parameters is not None: # perform illumination at the end: after elastic deform and swim
-            illumination_gen = get_image_data_generator(illumination_parameters=illumination_parameters)
-            pp_fun_list.append(data_generator_to_channel_postprocessing_fun(illumination_gen, [0]))
-
+        # perform illumination at the end: after elastic deform and swim
+        illumination_parameters = data_aug_params.get("illumination_transform", [data_aug_params.get("illumination_parameters", None)])
+        for cidx, ip in enumerate(illumination_parameters):
+            if ip is not None:
+                pp_fun_list.append(data_generator_to_channel_postprocessing_fun(get_image_data_generator(illumination_parameters=ip), [0 if cidx ==0 else cidx + 1])) # channel #1 is reserved to labels
         pp_fun = chain_pp_fun(pp_fun_list)
         iterator_params = dict(erase_edge_cell_size=data_aug_params.get("erase_edge_cell_size", 0),
                                aug_remove_prob=data_aug_params.get("static_probability", 0.01),
                                next=arch_params.get("next", True),
-                               center_mode=dataset_features.get("center_mode", "MEDOID"),
-                               center_distance_mode=dataset_features.get("center_distance_mode", "GEODESIC"),
+                               scale_edm = seg_args.get("scale_edm", False),
+                               center_mode=seg_args.get("center_mode", "MEDOID"),
+                               center_distance_mode=seg_args.get("center_distance_mode", "GEODESIC"),
                                frame_window=arch_params.get("frame_window", 3),
                                image_data_generators=[data_generators[0], mask_generator] + data_generators[1:],
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                                channels_postprocessing_function=pp_fun, verbose=False and args.test_data_augmentation, memory_persistent=memory_persistent)
-        return DyDxIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:], input_label_keywords=label_names, group_keyword=ds_conf.get("keyword", None),
+        return DyDxIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
+                            input_label_keywords=label_names, array_keywords=ARRAY_KEYWORDS[:1] if category_number<=1 else ARRAY_KEYWORDS,
+                            group_keyword=ds_conf.get("keyword", None),
                             batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=EDM_DERIVATIVE_LOSS,
                             aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
                             **iterator_params)
@@ -157,10 +141,11 @@ if __name__ == "__main__":
         input_shape = [None if s <= 0 else s for s in shape]
         arch_args["spatial_dimensions"] = input_shape.copy()
         nchan, nlabel = get_input_channel_and_label(config)
-        if nchan > 1 or nlabel>0:
-            input_shape = input_shape + [nchan + nlabel * 2] # for each label EDM and GDCM are added
+        n_inputs = nchan + nlabel * 2 # for each label EDM and GDCM are added
+        category_number = arch_args.pop("category_number", 0)
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
-        model = get_distnet_2d(input_shape, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=EDM_DERIVATIVE_LOSS, gcdm_derivative_loss=GCDM_DERIVATIVE_LOSS)
+        cdm_loss_radius = config.get("segmentation", {}).get("cdm_loss_radius", 0)
+        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=EDM_DERIVATIVE_LOSS, cdm_derivative_loss=CDM_DERIVATIVE_LOSS, cdm_loss_radius=cdm_loss_radius, category_number=category_number)
         if args.export_only or args.compute_metrics and os.path.exists(WEIGHT_PATH):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
@@ -254,7 +239,7 @@ if __name__ == "__main__":
                     inputs.append(input[..., i+len(cnames), :])
                     input_names.append(f"{cnames[i]}_EDM")
                     inputs.append(input[..., i + len(cnames) + 1, :])
-                    input_names.append(f"{cnames[i]}_GCDM")
+                    input_names.append(f"{cnames[i]}_CDM")
                 inputs = [np.transpose(input, transpose_axis) for input in inputs]
             else:
                 inputs = [np.transpose(input, transpose_axis)]
@@ -262,7 +247,7 @@ if __name__ == "__main__":
             if not input_only:
                 outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
                 outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
-                output_name = ["EDM", "GCDM", "dY", "dX", "Category"]
+                output_name = ["EDM", "CDM", "dY", "dX", "Category"]
             print(f"writing {len(outputs)+len(inputs)} x {input[0].shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
                 for i, o in enumerate(inputs):
