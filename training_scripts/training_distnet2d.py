@@ -226,28 +226,20 @@ if __name__ == "__main__":
                     outputs.append(output)
                 print(f"{i + 1}/{n_iterations}", flush=True)
             train_it.close()
-            input = np.stack(inputs, 0)
             transpose_axis = [4, 0, 1, 2, 3]
             cnames, lnames = get_input_channel_and_label(config, True)
             if len(cnames) + len(lnames) > 1:
-                inputs = []
-                input_names = []
-                for i in range(0, len(cnames)):
-                    inputs.append(input[..., i, :])
-                    input_names.append(cnames[i])
-                for i in range(len(lnames)):
-                    inputs.append(input[..., i+len(cnames), :])
-                    input_names.append(f"{cnames[i]}_EDM")
-                    inputs.append(input[..., i + len(cnames) + 1, :])
-                    input_names.append(f"{cnames[i]}_CDM")
-                inputs = [np.transpose(input, transpose_axis) for input in inputs]
+                inputs = transpose_list(inputs)  # (n_it, n_in) -> (n_in, n_it)
+                inputs = [np.transpose(np.stack(i, 0), transpose_axis) for i in inputs]
+                input_names = cnames + [f"{ln}_{'EDM' if i == 0 else 'CDM'}" for ln in lnames for i in range(2)]
             else:
-                inputs = [np.transpose(input, transpose_axis)]
+                inputs = np.stack(inputs, 0)
+                inputs = [np.transpose(inputs, transpose_axis)]
                 input_names = cnames
             if not input_only:
                 outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
                 outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
-                output_name = ["EDM", "CDM", "dY", "dX", "Category"]
+                output_name = ["EDM", "CDM", "dY", "dX", "LinkMultiplicity", "Category"]
             print(f"writing {len(outputs)+len(inputs)} x {input[0].shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
                 for i, o in enumerate(inputs):
