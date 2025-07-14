@@ -210,7 +210,7 @@ if __name__ == "__main__":
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
             idx = test_param.get("batch_index", -1)
             if idx < 0 or idx >= len(train_it):
-                idx = random.randint(0, len(train_it))
+                idx = random.randint(0, len(train_it)-1)
             inputs = []
             outputs = []
             print(f"Generating {n_iterations} versions of sample {idx}", flush=True)

@@ -250,7 +250,7 @@ if __name__ == "__main__":
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
             idx = test_param.get("batch_index", -1)
             if idx < 0 or idx >= len(train_it):
-                idx = random.randint(0, len(train_it))
+                idx = random.randint(0, len(train_it)-1)
             inputs = []
             outputs = []
             print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
@@ -293,7 +293,7 @@ if __name__ == "__main__":
             if it is None:
                 it = get_iterator(CONFIG, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, center_scale=[0., 1.])
             if idx < 0 or idx >= len(it):
-                idx = random.randint(0, len(it))
+                idx = random.randint(0, len(it)-1)
             if not is_eval_it:
                 input, = it[idx]
             else:
