@@ -58,16 +58,13 @@ if __name__ == "__main__":
     WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
     SHUFFLE = not args.test_data_augmentation
     START_EPOCH = t_p.get("start_epoch", 0)
-    EDM_DERIVATIVE_LOSS = True
-    CDM_DERIVATIVE_LOSS = True
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
     print(f"configuration file found. ")
-    # print(f"EDM derloss: {EDM_DERIVATIVE_LOSS}, CDM derloss: {CDM_DERIVATIVE_LOSS}", flush=True)
-
 
     def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
         data_aug_params = ds_conf.get("data_augmentation", {})
         seg_args = config.get("segmentation", {})
+        print(f"segmentation parameters: {seg_args}", flush=True)
         arch_params = config["model_architecture"]
         category_number = arch_params.get("category_number", 0)
         channel_names = ds_conf.get("channel_name", "raw")
@@ -128,7 +125,7 @@ if __name__ == "__main__":
         return DyDxIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
                             input_label_keywords=label_names, array_keywords=ARRAY_KEYWORDS[:1] if category_number<=1 else ARRAY_KEYWORDS,
                             group_keyword=ds_conf.get("keyword", None),
-                            batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=EDM_DERIVATIVE_LOSS,
+                            batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=seg_args.get("edm_derivatives", True),
                             aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
                             **iterator_params)
 
@@ -137,6 +134,7 @@ if __name__ == "__main__":
         arch_args = copy.deepcopy(config["model_architecture"])
         frame_window = arch_args.pop("frame_window", 3)
         next = arch_args.pop("next", True)
+        seg_args = config.get("segmentation", {})
         shape = config["dataset_parameters"]["input_shape"]
         input_shape = [None if s <= 0 else s for s in shape]
         arch_args["spatial_dimensions"] = input_shape.copy()
@@ -145,7 +143,7 @@ if __name__ == "__main__":
         category_number = arch_args.pop("category_number", 0)
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         cdm_loss_radius = config.get("segmentation", {}).get("cdm_loss_radius", 0)
-        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=EDM_DERIVATIVE_LOSS, cdm_derivative_loss=CDM_DERIVATIVE_LOSS, cdm_loss_radius=cdm_loss_radius, category_number=category_number)
+        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=seg_args.get("edm_derivatives", True), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, category_number=category_number)
         if args.export_only or args.compute_metrics and os.path.exists(WEIGHT_PATH):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
