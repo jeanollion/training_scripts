@@ -64,7 +64,6 @@ if __name__ == "__main__":
     def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
         data_aug_params = ds_conf.get("data_augmentation", {})
         seg_args = config.get("segmentation", {})
-        print(f"segmentation parameters: {seg_args}", flush=True)
         arch_params = config["model_architecture"]
         category_number = arch_params.get("category_number", 0)
         channel_names = ds_conf.get("channel_name", "raw")
