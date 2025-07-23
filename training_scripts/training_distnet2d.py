@@ -227,7 +227,6 @@ if __name__ == "__main__":
             else: # test predict
                 model = init_model()
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
-                model.load_weights()
                 input, _ = train_it[idx]
                 output = model.predict(input)
                 inputs.append(input)
