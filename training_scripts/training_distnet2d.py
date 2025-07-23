@@ -30,6 +30,7 @@ parser.add_argument("--train_only", action="store_true", help="train but no expo
 parser.add_argument("--export_only", action="store_true", help="skip model training")
 parser.add_argument("--test_data_augmentation", action="store_true", help="generate and store example of augmented data")
 parser.add_argument("--compute_metrics", action="store_true", help="compute loss")
+parser.add_argument("--test_predict", action="store_true", help="make predictions on evaluation dataset")
 parser.add_argument("--export_dir", type=str, help="directory to export saved model to")
 parser.add_argument("--n_epochs", type=int, help="number of training epochs")
 parser.add_argument("--step_number", type=int, help="number of training steps per epoch")
@@ -39,9 +40,9 @@ parser.add_argument("--min_learning_rate", type=float, help="minimal learning ra
 
 if __name__ == "__main__":
     args = parser.parse_args()
-
+    RUN_TEST = args.test_data_augmentation or args.test_predict
     # get parameters
-    config = open_config_file(args.config_dir, args.test_data_augmentation)
+    config = open_config_file(args.config_dir, RUN_TEST)
     t_p = config["training_parameters"]
     model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
     WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
@@ -56,7 +57,7 @@ if __name__ == "__main__":
     EPSILON_RANGE = t_p.get("epsilon_range", [1e-7, 1e-7])
     EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
     WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
-    SHUFFLE = not args.test_data_augmentation
+    SHUFFLE = not RUN_TEST
     START_EPOCH = t_p.get("start_epoch", 0)
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
     print(f"configuration file found. ")
@@ -80,7 +81,7 @@ if __name__ == "__main__":
         label_names = [f"/{cn}" if cn[0] != "/" else cn for cn in label_names]
         if dataset is None:
             dataset = ds_conf["path"]
-            memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
+            memory_persistent = WORKERS > 1 and not RUN_TEST and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
         else:
             memory_persistent = isinstance(dataset, MemoryIO)
         batch_size = ds_conf["batch_size"]
@@ -120,7 +121,7 @@ if __name__ == "__main__":
                                frame_window=arch_params.get("frame_window", 3),
                                image_data_generators=[data_generators[0], mask_generator] + data_generators[1:],
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
-                               channels_postprocessing_function=pp_fun, verbose=False and args.test_data_augmentation, memory_persistent=memory_persistent)
+                               channels_postprocessing_function=pp_fun, verbose=False and RUN_TEST, memory_persistent=memory_persistent)
         return DyDxIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
                             input_label_keywords=label_names, array_keywords=ARRAY_KEYWORDS[:1] if category_number<=1 else ARRAY_KEYWORDS,
                             group_keyword=ds_conf.get("keyword", None),
@@ -192,17 +193,15 @@ if __name__ == "__main__":
     else:
         print(f"init iterator...", flush=True)
         test_param = config.get("test_data_augmentation_parameters", {})
-        if args.test_data_augmentation and "frame_subsampling" in test_param:
+        if RUN_TEST and "frame_subsampling" in test_param:
             for ds_params in config["dataset_list"]:
                 ds_params["data_augmentation"]["frame_subsampling"] = test_param["frame_subsampling"]
         #it_steps = STEP_NUMBER if WORKERS==1 else 0
 
         test_it = None
-        if args.test_data_augmentation:
+        if RUN_TEST:
             train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
             test_param = config.get("test_data_augmentation_parameters", {})
-            input_only = test_param.get("input_only", True)
-            n_iterations = test_param.get("iteration_number", 10)
             root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
             idx = test_param.get("batch_index", -1)
@@ -210,18 +209,29 @@ if __name__ == "__main__":
                 idx = random.randint(0, len(train_it)-1)
             inputs = []
             outputs = []
-            print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
-            for i in range(n_iterations):
-                input, output = train_it[idx]
-                #idx_a = np.copy(train_it.index_array)
-                #print(f"index array: {idx_a}")
-                #if isinstance(train_it, ConcatIterator):
-                #    index_it = train_it._get_it_idx(idx_a)
-                #    print(f"it {index_it[idx]} shuffle: {train_it.iterators[index_it[idx]].shuffle} index array: {train_it.iterators[index_it[idx]].index_array}")
+            if args.test_data_augmentation:
+                input_only = test_param.get("input_only", True)
+                n_iterations = test_param.get("iteration_number", 10)
+                print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
+                for i in range(n_iterations):
+                    input, output = train_it[idx]
+                    #idx_a = np.copy(train_it.index_array)
+                    #print(f"index array: {idx_a}")
+                    #if isinstance(train_it, ConcatIterator):
+                    #    index_it = train_it._get_it_idx(idx_a)
+                    #    print(f"it {index_it[idx]} shuffle: {train_it.iterators[index_it[idx]].shuffle} index array: {train_it.iterators[index_it[idx]].index_array}")
+                    inputs.append(input)
+                    if not input_only:
+                        outputs.append(output)
+                    print(f"{i + 1}/{n_iterations}", flush=True)
+            else: # test predict
+                model = init_model()
+                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
+                input, _ = train_it[idx]
+                output = model.predict(input)
                 inputs.append(input)
-                if not input_only:
-                    outputs.append(output)
-                print(f"{i + 1}/{n_iterations}", flush=True)
+                outputs.append(output)
+
             train_it.close()
             transpose_axis = [4, 0, 1, 2, 3]
             cnames, lnames = get_input_channel_and_label(config, True)
@@ -233,17 +243,18 @@ if __name__ == "__main__":
                 inputs = np.stack(inputs, 0)
                 inputs = [np.transpose(inputs, transpose_axis)]
                 input_names = cnames
-            if not input_only:
+            if len(outputs)>0:
                 outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
                 outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
                 output_name = ["EDM", "CDM", "dY", "dX", "LinkMultiplicity", "Category"]
-            print(f"writing {len(outputs)+len(inputs)} x {input[0].shape} to file: {file_path}", flush=True)
+            print(f"writing {len(outputs)+len(inputs)} x {inputs[0].shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
                 for i, o in enumerate(inputs):
                     h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input_{i}_{input_names[i]}", data=o)
-                if not input_only:
+                if len(outputs)>0:
                     for i, o in enumerate(outputs):
                         h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output_{i}_{output_name[i]}", data=o)
+
         elif args.compute_metrics:
             model = init_model()
             model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
