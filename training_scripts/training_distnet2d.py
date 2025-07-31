@@ -1,5 +1,6 @@
 import argparse
 import os
+import platform
 import random
 import numpy as np
 import tensorflow as tf
@@ -22,7 +23,7 @@ from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
     get_shm_info, get_shm_nfiles, get_input_channel_and_label
 
-__VERSION__ = '1.1.2'
+__VERSION__ = '1.1.3'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
@@ -59,7 +60,7 @@ if __name__ == "__main__":
     WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
     SHUFFLE = not RUN_TEST
     START_EPOCH = t_p.get("start_epoch", 0)
-    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}")
+    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')} python: {platform.python_version()}")
     print(f"configuration file found. ")
 
     def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
@@ -111,6 +112,7 @@ if __name__ == "__main__":
         for cidx, ip in enumerate(illumination_parameters):
             if ip is not None:
                 pp_fun_list.append(data_generator_to_channel_postprocessing_fun(get_image_data_generator(illumination_parameters=ip), [0 if cidx ==0 else cidx + 1])) # channel #1 is reserved to labels
+
         pp_fun = chain_pp_fun(pp_fun_list)
         iterator_params = dict(erase_edge_cell_size=data_aug_params.get("erase_edge_cell_size", 0),
                                aug_remove_prob=data_aug_params.get("static_probability", 0.01),
@@ -134,6 +136,7 @@ if __name__ == "__main__":
         arch_args = copy.deepcopy(config["model_architecture"])
         frame_window = arch_args.pop("frame_window", 3)
         next = arch_args.pop("next", True)
+        inference_gap_number = arch_args.pop("inference_gap_number", 0)
         seg_args = config.get("segmentation", {})
         shape = config["dataset_parameters"]["input_shape"]
         input_shape = [None if s <= 0 else s for s in shape]
@@ -143,7 +146,7 @@ if __name__ == "__main__":
         category_number = arch_args.pop("category_number", 0)
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         cdm_loss_radius = config.get("segmentation", {}).get("cdm_loss_radius", 0)
-        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=seg_args.get("edm_derivatives", True), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, category_number=category_number)
+        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=seg_args.get("edm_derivatives", True), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, category_number=category_number, inference_gap_number=inference_gap_number)
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
