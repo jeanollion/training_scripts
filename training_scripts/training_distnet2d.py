@@ -145,8 +145,8 @@ if __name__ == "__main__":
         n_inputs = nchan + nlabel * 2 # for each label EDM and GDCM are added
         category_number = arch_args.pop("category_number", 0)
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
-        cdm_loss_radius = config.get("segmentation", {}).get("cdm_loss_radius", 0)
-        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=seg_args.get("edm_derivatives", True), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, category_number=category_number, inference_gap_number=inference_gap_number)
+        cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
+        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=seg_args.get("edm_derivatives", True), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_loss_radius=cdm_loss_radius, category_number=category_number, inference_gap_number=inference_gap_number)
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)

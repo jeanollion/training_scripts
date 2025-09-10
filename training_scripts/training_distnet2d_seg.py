@@ -237,8 +237,9 @@ if __name__ == "__main__":
         arch_args["spatial_dimensions"] = input_shape
         category_number = arch_args.pop("category_number", 0)
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
-        cdm_loss_radius = config.get("segmentation", {}).get("cdm_loss_radius", 0)
-        model = get_distnet_2d_seg(n_inputs=n_inputs, config=arch, skip_connections=skip_connections, shared_encoder=False, accum_steps=1, l2_reg=0, category_number=category_number, cdm_loss_radius=cdm_loss_radius)
+        seg_args = config.get("segmentation", {})
+        cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
+        model = get_distnet_2d_seg(n_inputs=n_inputs, config=arch, skip_connections=skip_connections, shared_encoder=False, accum_steps=1, l2_reg=0, scale_edm = seg_args.get("scale_edm", False), category_number=category_number, cdm_loss_radius=cdm_loss_radius)
         if args.export_only:
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
