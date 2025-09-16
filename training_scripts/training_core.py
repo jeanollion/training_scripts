@@ -285,4 +285,4 @@ def get_category_weights(config:dict, category_number:int, category_keyword:str=
         class_weights[category] = weight
         if weight_range is not None:
             class_weights[category] = min(max(class_weights[category], weight_range[0]), weight_range[1])
-    return np.array([weight for label, weight in class_weights])
+    return np.array([weight for _, weight in class_weights.items()])
