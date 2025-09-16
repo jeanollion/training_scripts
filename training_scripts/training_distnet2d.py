@@ -191,7 +191,7 @@ if __name__ == "__main__":
 
         return single_links_total, multiple_links_total, null_links_total
 
-    def init_model():
+    def init_model(training:bool):
         arch_args = copy.deepcopy(config["model_architecture"])
         frame_window = arch_args.pop("frame_window", 3)
         next = arch_args.pop("next", True)
@@ -202,10 +202,11 @@ if __name__ == "__main__":
         arch_args["spatial_dimensions"] = input_shape.copy()
         nchan, nlabel = get_input_channel_and_label(config)
         n_inputs = nchan + nlabel * 2 # for each label EDM and GDCM are added
-        link_multiplicity_class_weights = get_link_multiplicity_class_weights(config, max_weight = 50)
-        print(f"link multiplicity weights: { {l:w for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
+        link_multiplicity_class_weights = get_link_multiplicity_class_weights(config, max_weight = 50) if training else None
+        if training:
+            print(f"link multiplicity weights: { {l:w for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
         category_number = arch_args.pop("category_number", 0)
-        category_class_weights = get_category_class_weights(config, category_number, category_keyword=ARRAY_KEYWORDS[1], max_weight=10) if category_number > 1 else None
+        category_class_weights = get_category_class_weights(config, category_number, category_keyword=ARRAY_KEYWORDS[1], max_weight=10) if training and category_number > 1 else None
         if category_class_weights is not None:
             print(f"Category class weights: {category_class_weights}")
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
@@ -253,7 +254,7 @@ if __name__ == "__main__":
 
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})", flush=True)
-        model = init_model()
+        model = init_model(False)
         # export model
         model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
         print("model saved", flush=True)
@@ -292,7 +293,7 @@ if __name__ == "__main__":
                         outputs.append(output)
                     print(f"{i + 1}/{n_iterations}", flush=True)
             else: # test predict
-                model = init_model()
+                model = init_model(False)
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
                 input, _ = train_it[idx]
                 output = model.predict(input)
@@ -323,7 +324,7 @@ if __name__ == "__main__":
                         h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output_{i}_{output_name[i]}", data=o)
 
         elif args.compute_metrics:
-            model = init_model()
+            model = init_model(False)
             model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
             predict_fun = lambda x: model(x, training=False)
             hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False)
@@ -340,7 +341,7 @@ if __name__ == "__main__":
             train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
             # init model
             print("init model...", flush=True)
-            model = init_model()
+            model = init_model(True)
             model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
             # perform training
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
