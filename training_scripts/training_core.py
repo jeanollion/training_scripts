@@ -257,3 +257,32 @@ def get_input_channel_and_label(config, return_names:bool = False):
         return cnames, lnames
     else:
         return nchan[0], nlabel[0]
+
+def get_category_weights(config:dict, category_number:int, category_keyword:str="/category", weight_range=[1 / 10, 10]):
+    counts = {i:0 for i in range(0, category_number)}
+    for i, ds_conf in enumerate(config["dataset_list"]):
+        dataset = get_datasetIO(ds_conf["path"], 'r')
+        paths = dataset.get_dataset_paths(category_keyword, ds_conf.get("keyword", None))
+        for p in paths:
+            cat_array = dataset.get_dataset(p)
+            unique_labels, local_counts = np.unique(cat_array, return_counts=True)
+            current_counts = dict(zip(unique_labels, local_counts))
+            for category, count in current_counts.items():
+                if category in counts:
+                    counts[category] += count
+                else:
+                    raise ValueError(f"Category {category} is present in dataset: {p} whereas #{category_number} categories are expected")
+        dataset.close()
+
+    # compute weights
+    total_samples = sum(counts.values())
+    num_classes = len(counts)
+    class_weights = {}
+
+    for category, count in counts.items():
+        # Calculate weight as the total samples divided by (number of classes * number of samples in class)
+        weight = total_samples / (num_classes * max(1, count))
+        class_weights[category] = weight
+        if weight_range is not None:
+            class_weights[category] = min(max(class_weights[category], weight_range[0]), weight_range[1])
+    return np.array([weight for label, weight in class_weights])

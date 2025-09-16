@@ -21,7 +21,7 @@ from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
-    get_shm_info, get_shm_nfiles, get_input_channel_and_label
+    get_shm_info, get_shm_nfiles, get_input_channel_and_label, get_category_weights
 
 __VERSION__ = '1.1.3'
 parser = argparse.ArgumentParser()
@@ -144,9 +144,12 @@ if __name__ == "__main__":
         nchan, nlabel = get_input_channel_and_label(config)
         n_inputs = nchan + nlabel * 2 # for each label EDM and GDCM are added
         category_number = arch_args.pop("category_number", 0)
+        category_weights = get_category_weights(config, category_number, category_keyword=ARRAY_KEYWORDS[1], weight_range=[1 / 10, 10]) if category_number > 1 else None
+        if category_weights is not None:
+            print(f"Category weights: {category_weights}")
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
-        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=seg_args.get("edm_derivatives", True), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_loss_radius=cdm_loss_radius, category_number=category_number, inference_gap_number=inference_gap_number)
+        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=seg_args.get("edm_derivatives", True), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_loss_radius=cdm_loss_radius, category_number=category_number, category_weights=category_weights, inference_gap_number=inference_gap_number)
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
