@@ -23,13 +23,14 @@ from dataset_iterator.keras_callbacks import StopOnLR, EpsilonCosineDecayCallbac
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 
 from distnet_2d.data.center_edm import compute_edm
+from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d_seg import get_distnet_2d_seg
 from distnet_2d.data.medoid import get_medoid
 from distnet_2d.utils.helpers import flatten_list
 
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info, \
-    get_input_channel_and_label, chain_pp_fun
+    get_input_channel_and_label, chain_pp_fun, get_category_class_weights
 
 __VERSION__ = "1.1.2"
 
@@ -208,7 +209,7 @@ if __name__ == "__main__":
         print(f"channels : {[channel_names[0], '/regionLabels'] + channel_names[1:] + label_names} inputs: {[0] + [1 + ci for ci in range(1, len(channel_names))] + [ci for ci in label_cidx for _ in range(2)]} outputs: {[1, 1, cat_idx] if category_number > 1 else [1, 1]} mask: {[1] + label_cidx}")
         iterator_params = dict(dataset=dataset,
                                channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:] + label_names,
-                               array_keywords = ["/category"] if category_number > 1 else None,
+                               array_keywords = [ARRAY_KEYWORDS[1]] if category_number > 1 else None,
                                group_keyword=ds_conf.get("keyword", None),
                                input_channels=[0] + [1 + ci for ci in range(1, len(channel_names))] + [ci for ci in label_cidx for _ in range(2)], # edm / cdm
                                output_channels=[1, 1, cat_idx] if category_number > 1 else [1, 1], # cat_idx = placeholder for category computed in post_processing fun
@@ -236,10 +237,13 @@ if __name__ == "__main__":
         input_shape = [None if s <= 0 else s for s in shape]
         arch_args["spatial_dimensions"] = input_shape
         category_number = arch_args.pop("category_number", 0)
+        category_class_weights = get_category_class_weights(config, category_number, category_keyword=ARRAY_KEYWORDS[1], max_weight=10) if category_number > 1 else None
+        if category_class_weights is not None:
+            print(f"Category class weights: {category_class_weights}")
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         seg_args = config.get("segmentation", {})
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
-        model = get_distnet_2d_seg(n_inputs=n_inputs, config=arch, skip_connections=skip_connections, shared_encoder=False, accum_steps=1, l2_reg=0, scale_edm = seg_args.get("scale_edm", False), category_number=category_number, cdm_loss_radius=cdm_loss_radius)
+        model = get_distnet_2d_seg(n_inputs=n_inputs, config=arch, skip_connections=skip_connections, shared_encoder=False, accum_steps=1, l2_reg=0, scale_edm = seg_args.get("scale_edm", False), category_number=category_number, category_class_weights=category_class_weights, cdm_loss_radius=cdm_loss_radius)
         if args.export_only:
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)

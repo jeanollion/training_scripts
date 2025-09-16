@@ -258,7 +258,7 @@ def get_input_channel_and_label(config, return_names:bool = False):
     else:
         return nchan[0], nlabel[0]
 
-def get_category_weights(config:dict, category_number:int, category_keyword:str="/category", weight_range=[1 / 10, 10]):
+def get_category_class_weights(config:dict, category_number:int, category_keyword:str= "/category", max_weight=10):
     counts = {i:0 for i in range(0, category_number)}
     for i, ds_conf in enumerate(config["dataset_list"]):
         dataset = get_datasetIO(ds_conf["path"], 'r')
@@ -273,7 +273,9 @@ def get_category_weights(config:dict, category_number:int, category_keyword:str=
                 else:
                     raise ValueError(f"Category {category} is present in dataset: {p} whereas #{category_number} categories are expected")
         dataset.close()
+    return compute_category_weights(counts, max_weight)
 
+def compute_category_weights(counts:dict, max_weight = None):
     # compute weights
     total_samples = sum(counts.values())
     num_classes = len(counts)
@@ -283,6 +285,6 @@ def get_category_weights(config:dict, category_number:int, category_keyword:str=
         # Calculate weight as the total samples divided by (number of classes * number of samples in class)
         weight = total_samples / (num_classes * max(1, count))
         class_weights[category] = weight
-        if weight_range is not None:
-            class_weights[category] = min(max(class_weights[category], weight_range[0]), weight_range[1])
+        if max_weight is not None and max_weight > 0:
+            class_weights[category] = min( class_weights[category], max_weight)
     return np.array([weight for _, weight in class_weights.items()])
