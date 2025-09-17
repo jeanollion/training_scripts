@@ -21,6 +21,7 @@ from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
+from distnet_2d.utils.helpers import get_background_foreground_counts
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
     get_shm_info, get_shm_nfiles, get_input_channel_and_label, get_category_class_weights, compute_category_weights
@@ -134,6 +135,13 @@ if __name__ == "__main__":
                             **iterator_params)
 
 
+    def get_edm_class_weights(config: dict, max_weight:float):
+        counts = np.array([0, 0], dtype="float128")
+        for i, ds_conf in enumerate(config["dataset_list"]):
+            counts += get_background_foreground_counts(ds_conf["path"], channel_keyword='/regionLabels', group_keyword=ds_conf.get("keyword", None))
+        weights = compute_category_weights(dict(zip(["bck", "fore"], counts.tolist())), max_weight)
+        return weights.astype("float32")
+
     def get_link_multiplicity_class_weights(config: dict, max_weight= 50):
         counts = {i: 0 for i in range(0, 3)}
         for i, ds_conf in enumerate(config["dataset_list"]):
@@ -209,9 +217,11 @@ if __name__ == "__main__":
         category_class_weights = get_category_class_weights(config, category_number, category_keyword=ARRAY_KEYWORDS[1], max_weight=10) if training and category_number > 1 else None
         if category_class_weights is not None:
             print(f"Category class weights: {category_class_weights}")
+        edm_max_weight = seg_args.get("edm_max_frequency_weight", 0)
+        edm_frequency_weights = get_edm_class_weights(config, edm_max_weight) if training and edm_max_weight>0 else None
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
-        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_derivative_loss=seg_args.get("edm_derivatives", True), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number)
+        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights, edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number)
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
