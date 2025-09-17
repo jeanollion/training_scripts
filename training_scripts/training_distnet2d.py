@@ -219,6 +219,8 @@ if __name__ == "__main__":
             print(f"Category class weights: {category_class_weights}")
         edm_max_weight = seg_args.get("edm_max_frequency_weight", 0)
         edm_frequency_weights = get_edm_class_weights(config, edm_max_weight) if training and edm_max_weight>0 else None
+        if edm_frequency_weights is not None:
+            print(f"edm background/forground balancing weights {edm_frequency_weights}")
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
         model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights, edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number)
