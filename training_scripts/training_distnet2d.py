@@ -21,7 +21,7 @@ from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
-from distnet_2d.utils.helpers import get_background_foreground_counts
+from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
     get_shm_info, get_shm_nfiles, get_input_channel_and_label, get_category_class_weights, compute_category_weights
@@ -144,60 +144,21 @@ if __name__ == "__main__":
 
     def get_link_multiplicity_class_weights(config: dict, max_weight= 50):
         counts = {i: 0 for i in range(0, 3)}
+        log = True
         for i, ds_conf in enumerate(config["dataset_list"]):
             dataset = get_datasetIO(ds_conf["path"], 'r')
             paths = dataset.get_dataset_paths(ARRAY_KEYWORDS[0], ds_conf.get("keyword", None))
             for p in paths:
                 lm_array = dataset.get_dataset(p)
-                s, m, n = count_links(lm_array)
+                s, m, n = count_links(lm_array, detailed = False)
                 counts[0] += s
                 counts[1] += m
                 counts[2] += n
+                log = False
             dataset.close()
+        print(f"link multiplicity counts: {counts}")
         return compute_category_weights(counts, max_weight)
 
-
-    def count_links(previous_links):
-        if previous_links.ndim == 2:
-            previous_links = np.expand_dims(previous_links, axis=0)
-        single_links_total = 0
-        multiple_links_total = 0
-        null_links_total = 0
-
-        for frame in previous_links:
-            current_labels = frame[:, 0]
-            previous_labels = frame[:, 1]
-
-            # Use bincount to count occurrences of current and previous labels within the frame
-            valid_mask = (current_labels > 0) & (previous_labels > 0)
-            unique_current_labels, current_counts = np.unique(current_labels[valid_mask], return_counts=True)
-            unique_previous_labels, previous_counts = np.unique(previous_labels[valid_mask], return_counts=True)
-
-            # Create count arrays for current and previous labels
-            max_current_label = np.max(current_labels) + 1 if len(current_labels) > 0 else 1
-            max_previous_label = np.max(previous_labels) + 1 if len(previous_labels) > 0 else 1
-            current_label_counts = np.zeros(max_current_label, dtype=int)
-            previous_label_counts = np.zeros(max_previous_label, dtype=int)
-
-            # Map counts to arrays
-            current_label_counts[unique_current_labels] = current_counts
-            previous_label_counts[unique_previous_labels] = previous_counts
-
-            # Count occurrences for each label in the current and previous arrays
-            current_label_counts_full = current_label_counts[current_labels]
-            previous_label_counts_full = previous_label_counts[previous_labels]
-
-            # Determine null, single, and multiple links
-            null_mask = np.logical_xor(current_labels == 0, previous_labels == 0)
-            single_mask = (current_label_counts_full == 1) & (previous_label_counts_full == 1) & valid_mask
-            multiple_mask = ((current_label_counts_full > 1) | (previous_label_counts_full > 1)) & valid_mask
-
-            # Update total counts for this frame
-            single_links_total += np.sum(single_mask)
-            multiple_links_total += np.sum(multiple_mask)
-            null_links_total += np.sum(null_mask)
-
-        return single_links_total, multiple_links_total, null_links_total
 
     def init_model(training:bool):
         arch_args = copy.deepcopy(config["model_architecture"])
@@ -220,7 +181,7 @@ if __name__ == "__main__":
         edm_max_weight = seg_args.get("edm_max_frequency_weight", 0)
         edm_frequency_weights = get_edm_class_weights(config, edm_max_weight) if training and edm_max_weight>0 else None
         if edm_frequency_weights is not None:
-            print(f"edm background/forground balancing weights {edm_frequency_weights}")
+            print(f"edm background/foreground balancing weights {edm_frequency_weights}")
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
         model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights, edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number)
