@@ -2,12 +2,15 @@ import argparse
 import os, resource
 import sys
 import random
+import time
+
 import numpy as np
 import tensorflow as tf
 import h5py
 from importlib.metadata import version
 from dataset_iterator.image_data_generator import get_image_data_generator
 from dataset_iterator.datasetIO import MemoryIO
+from dataset_iterator.nonvoid_iterator import NonVoidIterator
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 from dataset_iterator.keras_callbacks import EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
 from pix_mclass.utils import ensure_multiplicity
@@ -71,11 +74,9 @@ if __name__ == "__main__":
             memory_persistent = isinstance(dataset, MemoryIO)
         if dataset_type=="TRAIN":
             weights = get_class_weights(dataset, classes_name) # inverse frequency
-            weight_limit = ds_conf.get("loss_weight_range", None)
+            weight_limit = ds_conf.get("max_loss_weight", ds_conf.get("loss_weight_range", [None, None])[1])
             if weight_limit is not None:
-                assert len(weight_limit) == 2, "Weight limit should be of length 2"
-                weights = np.minimum(weights, np.max(weight_limit))
-                weights = np.maximum(weights, np.min(weight_limit))
+                weights = np.minimum(weights, weight_limit)
         scaling_parameters = data_aug_params.get("scaling_parameters", None)
         if scaling_parameters is not None:
             scaling_parameters = ensure_multiplicity(len(channel_names), scaling_parameters)
@@ -101,6 +102,9 @@ if __name__ == "__main__":
                                 elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
                                 )
         if dataset_type=="TRAIN":
+            min_annotated_pixel_number = ds_conf.get("min_annotated_pixel_number", 0)
+            if min_annotated_pixel_number > 0:
+                it = NonVoidIterator(it, 0, False, pix_thld=min_annotated_pixel_number)
             return it, weights
         else:
             return it
