@@ -13,6 +13,7 @@ from dataset_iterator.datasetIO import MemoryIO
 from dataset_iterator.nonvoid_iterator import NonVoidIterator
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 from dataset_iterator.keras_callbacks import EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
+from pix_mclass.unet import get_model
 from pix_mclass.utils import ensure_multiplicity
 from pix_mclass import get_unet
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
@@ -109,8 +110,8 @@ if __name__ == "__main__":
         else:
             return it
 
-    def init_model(n_classes, n_inputs):
-        model = get_unet(n_classes, n_inputs=n_inputs, skip_omit=0)
+    def init_model(n_classes:int, arch_conf:dict):
+        model = get_model(n_classes=n_classes, **arch_conf)
         if args.export_only:
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
@@ -131,11 +132,16 @@ if __name__ == "__main__":
                 assert n == cur_n, f"invalid channel number for dataset: {ds_conf['path']}"
         return n
 
-
     N_INPUTS = get_input_number(config)
+    arch_conf = config.get("model_architecture", {"architecture_type": "unet", "n_inputs": max(1, N_INPUTS)})
+    if N_INPUTS == -1:
+        N_INPUTS = arch_conf["n_inputs"]
+    assert arch_conf["n_inputs"] == N_INPUTS, f"Inconsistent input number between datasets ({N_INPUTS}) and model {arch_conf['n_inputs']}"
+    print(f"Input Number: {N_INPUTS}")
+
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
-        model = init_model(args.class_number, N_INPUTS)
+        model = init_model(args.class_number, **arch_conf)
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
         model.load_weights(WEIGHT_PATH)
         # export model
@@ -203,7 +209,7 @@ if __name__ == "__main__":
             # init model
             print("init model...", flush=True)
             loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
-            model = init_model(weights.shape[0], N_INPUTS)
+            model = init_model(weights.shape[0], arch_conf)
             model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]), loss=loss)
 
             # perform training
