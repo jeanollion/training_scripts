@@ -109,8 +109,8 @@ if __name__ == "__main__":
         else:
             return it
 
-    def init_model(n_classes):
-        model = get_unet(n_classes, skip_omit=0)
+    def init_model(n_classes, n_inputs):
+        model = get_unet(n_classes, n_inputs=n_inputs, skip_omit=0)
         if args.export_only:
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
@@ -120,9 +120,22 @@ if __name__ == "__main__":
             print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
         return model
 
+    def get_input_number(config):
+        n = -1
+        for ds_conf in config["dataset_list"]:
+            channel_names = ds_conf.get("channel_name", "raw")
+            cur_n = 1 if not isinstance(channel_names, (list, tuple)) else len(channel_names)
+            if n<0:
+                n=cur_n
+            else:
+                assert n == cur_n, f"invalid channel number for dataset: {ds_conf['path']}"
+        return n
+
+
+    N_INPUTS = get_input_number(config)
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
-        model = init_model(args.class_number)
+        model = init_model(args.class_number, N_INPUTS)
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
         model.load_weights(WEIGHT_PATH)
         # export model
@@ -132,6 +145,7 @@ if __name__ == "__main__":
         print(f"init iterator...", flush=True)
         train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TRAIN")
         test_it = get_iterator(config, init_iterator, step_number=VAL_STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TEST")
+
         if len(weight_list) > 1:
             # weighted sum of weights
             weights = np.zeros_like(weight_list[0])
@@ -161,19 +175,26 @@ if __name__ == "__main__":
             print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
             for i in range(n_iterations):
                 input, output = train_it[idx]
+                if N_INPUTS == 1:
+                    input = [input]
                 inputs.append(input)
                 if not input_only:
                     outputs.append(output)
                 print(f"{i + 1}/{n_iterations}", flush=True)
-            input = np.stack(inputs, 1)
+
             transpose_axis = [0, 1, 4, 2, 3]
-            input = np.transpose(input, transpose_axis)
+            input = []
+            for i in range(N_INPUTS):
+                local_input = np.stack([in_[i] for in_ in inputs], 1)
+                local_input = np.transpose(local_input, transpose_axis)
+                input.append(local_input)
             if not input_only:
                 output = np.stack(outputs, 1)
                 output = np.transpose(output, transpose_axis)
-            print(f"writing {len(outputs) + 1 } x {input.shape} to file: {file_path}", flush=True)
+            print(f"writing {len(outputs) + N_INPUTS } x {input[0].shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
-                h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input", data=input)
+                for i in range(N_INPUTS):
+                    h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input{i}", data=input[i])
                 if not input_only:
                     h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output", data=output)
             if (os.path.exists("/dataTemp")):
@@ -182,7 +203,7 @@ if __name__ == "__main__":
             # init model
             print("init model...", flush=True)
             loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
-            model = init_model(weights.shape[0])
+            model = init_model(weights.shape[0], N_INPUTS)
             model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]), loss=loss)
 
             # perform training
