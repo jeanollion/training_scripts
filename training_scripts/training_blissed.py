@@ -21,7 +21,7 @@ from ssnb_denoising.models.dnet_n2n import get_dnet_n2n
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm
 from tensorflow.keras.models import load_model
 
-__VERSION__ = '1.0.1'
+__VERSION__ = '1.0.2'
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
