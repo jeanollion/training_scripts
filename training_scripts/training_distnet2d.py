@@ -24,7 +24,7 @@ from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
-    get_shm_info, get_shm_nfiles, get_input_channel_and_label, get_category_class_weights, compute_category_weights
+    get_shm_info, get_input_channel_and_label, get_category_class_weights, compute_category_weights
 
 __VERSION__ = '1.1.3'
 parser = argparse.ArgumentParser()
