@@ -243,7 +243,10 @@ if __name__ == "__main__":
 
             # init model
             print("init model...", flush=True)
-            loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
+            if args.strategy != "":
+                loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32", reduction=tf.losses.Reduction.NONE) 
+            else:
+                loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
 
             with strategy.scope():
                 model = init_model(weights.shape[0], arch_conf)
@@ -310,7 +313,6 @@ if __name__ == "__main__":
                         save_path,
                         include_optimizer=False,
                         save_traces=True,
-                        inference=True,
                     )
                     print("model saved", flush=True)
 

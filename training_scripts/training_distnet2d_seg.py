@@ -404,7 +404,6 @@ if __name__ == "__main__":
                         save_path,
                         include_optimizer=False,
                         save_traces=True,
-                        inference=True,
                     )
                     print("model saved", flush=True)
 
