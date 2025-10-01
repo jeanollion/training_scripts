@@ -1,5 +1,6 @@
 import argparse
 import os, resource
+import shutil
 import sys
 import random
 import time
@@ -35,6 +36,7 @@ parser.add_argument("--step_number", type=int, help="number of training steps pe
 parser.add_argument("--patience", type=int, help="patience for learning rate decrease during training")
 parser.add_argument("--learning_rate", type=float, help="initial learning rate for training")
 parser.add_argument("--min_learning_rate", type=float, help="minimal learning rate for training")
+parser.add_argument("--strategy", default="", type=str, help="distributed training strategy: multiworker-slurm or mirrored. Leave empty for default behaviour (single replica)")
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -55,7 +57,11 @@ if __name__ == "__main__":
     MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
     EPSILON_RANGE = t_p.get("epsilon_range", [0.1, 1e-7])
     EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
-    WORKERS = min(os.cpu_count(), t_p.get("multiprocessing_workers", 1))
+    if args.strategy == "multiworker-slurm":
+        WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
+    else:
+        WORKERS = t_p.get("multiprocessing_workers", 1)
+    WORKERS = min(os.cpu_count(), WORKERS)
     SHUFFLE = not args.test_data_augmentation
     START_EPOCH = t_p.get("epoch_start", 0)
 
@@ -206,11 +212,45 @@ if __name__ == "__main__":
             if (os.path.exists("/dataTemp")):
                 print(f"dataTemp exists ! {os.listdir('/dataTemp')}", flush=True)
         else:
+            # handling the current strategy
+            if args.strategy == "multiworker-slurm":
+                # build multi-worker environment from Slurm variables
+                cluster_resolver = tf.distribute.cluster_resolver.SlurmClusterResolver(
+                    port_base=15000
+                )
+
+                # use NCCL communication protocol
+                implementation = (
+                    tf.distribute.experimental.CommunicationImplementation.NCCL
+                )
+                communication_options = tf.distribute.experimental.CommunicationOptions(
+                    timeout_seconds=0.0,
+                    implementation=implementation,
+                )
+
+                # declare distribution strategy
+                strategy = tf.distribute.MultiWorkerMirroredStrategy(
+                    cluster_resolver=cluster_resolver,
+                    communication_options=communication_options,
+                )
+
+            elif args.strategy == "mirrored":
+                strategy = tf.distribute.MirroredStrategy()
+            else:
+                strategy = (
+                    tf.distribute.get_strategy()
+                )  # will return a default single replica strategy
+
             # init model
             print("init model...", flush=True)
-            loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
-            model = init_model(weights.shape[0], arch_conf)
-            model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]), loss=loss)
+            if args.strategy != "":
+                loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32", reduction=tf.losses.Reduction.NONE) 
+            else:
+                loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
+
+            with strategy.scope():
+                model = init_model(weights.shape[0], arch_conf)
+                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]), loss=loss)
 
             # perform training
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
@@ -257,5 +297,32 @@ if __name__ == "__main__":
                 test_it.close()
             if not args.train_only: # export model
                 print("saving model...", flush=True)
-                tf.saved_model.save(model, SAVED_MODEL_PATH)
-                print("model saved", flush=True)
+                if args.strategy == "multiworker-slurm":
+                    is_chief = (
+                        cluster_resolver.task_type == "worker"
+                        and cluster_resolver.task_id == 0
+                    )
+
+                    save_path = (
+                        SAVED_MODEL_PATH
+                        if is_chief
+                        else SAVED_MODEL_PATH + "_tmp_" + os.environ.get("SLURM_PROCID", "")
+                    )
+
+                    model.save(
+                        save_path,
+                        include_optimizer=False,
+                        save_traces=True,
+                    )
+                    print("model saved", flush=True)
+
+                    if not is_chief:
+                        print(f"cleaning temp models at {save_path}", flush=True)
+                        shutil.rmtree(save_path)  # clean up for non chief worker
+                else:
+                    model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
+                    # model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+                    print("model saved", flush=True)
+                    # print("saving model...", flush=True)
+                    # tf.saved_model.save(model, SAVED_MODEL_PATH)
+                    # print("model saved", flush=True)
