@@ -97,6 +97,15 @@ if __name__ == "__main__":
         batch_size = ds_conf["batch_size"]
         if "tiling_parameters" in ds_conf:
             tiling_parameters = ds_conf["tiling_parameters"]
+            if "anchor_point_mask_idx" in tiling_parameters:
+                anchor_point_mask_idx = tiling_parameters["anchor_point_mask_idx"]
+                # channel order is : raw, label, *additional_channels, *additional_labels
+                if anchor_point_mask_idx == 0:
+                    anchor_point_mask_idx = 1
+                else:
+                    assert 0<=anchor_point_mask_idx-1<len(label_names), f"invalid anchor point idx. 0=target label, >0 = additional label. must be in range [0; {len(label_names)+1}]"
+                    anchor_point_mask_idx = 1 + len(channel_names) + anchor_point_mask_idx - 1
+                tiling_parameters["anchor_point_mask_idx"] = anchor_point_mask_idx
             extract_tiles_fun = extract_tile_random_zoom_function(**tiling_parameters)
         else:
             extract_tiles_fun = None

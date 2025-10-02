@@ -25,13 +25,15 @@ from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 
 from distnet_2d.data.center_edm import compute_edm
 from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
+from distnet_2d.model import get_distnet_2d
 from distnet_2d.model.architectures import get_architecture
+from distnet_2d.model.distnet_2d import DiSTNetModel
 from distnet_2d.model.distnet_2d_seg import get_distnet_2d_seg
 from distnet_2d.data.medoid import get_medoid
-from distnet_2d.utils.helpers import flatten_list
+from distnet_2d.utils.helpers import flatten_list, get_background_foreground_counts
 
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info, \
-    get_input_channel_and_label, chain_pp_fun, get_category_class_weights
+    get_input_channel_and_label, chain_pp_fun, get_category_class_weights, compute_category_weights
 
 __VERSION__ = "1.1.2"
 
@@ -107,6 +109,15 @@ if __name__ == "__main__":
         batch_size = ds_conf["batch_size"]
         if "tiling_parameters" in ds_conf:
             tiling_parameters = ds_conf["tiling_parameters"]
+            if "anchor_point_mask_idx" in tiling_parameters:
+                anchor_point_mask_idx = tiling_parameters["anchor_point_mask_idx"]
+                # channel order is : raw, label, *additional_channels, *additional_labels
+                if anchor_point_mask_idx == 0:
+                    anchor_point_mask_idx = 1
+                else:
+                    assert 0<=anchor_point_mask_idx-1<len(label_names), f"invalid anchor point idx. 0=target label, >0 = additional label. must be in range [0; {len(label_names)+1}]"
+                    anchor_point_mask_idx = 1 + len(channel_names) + anchor_point_mask_idx - 1
+                tiling_parameters["anchor_point_mask_idx"] = anchor_point_mask_idx
             extract_tiles_fun = extract_tile_random_zoom_function(**tiling_parameters)
         else:
             extract_tiles_fun = None
@@ -231,14 +242,22 @@ if __name__ == "__main__":
                                memory_persistent=memory_persistent)
         return MultiChannelIterator(**iterator_params)
 
+    def get_edm_class_weights(config: dict, max_weight:float):
+        counts = np.array([0, 0], dtype="float128")
+        for i, ds_conf in enumerate(config["dataset_list"]):
+            counts += get_background_foreground_counts(ds_conf["path"], channel_keyword='/regionLabels', group_keyword=ds_conf.get("keyword", None))
+        weights = compute_category_weights(dict(zip(["bck", "fore"], counts.tolist())), max_weight)
+        return weights.astype("float32")
 
-    def init_model():
+    def init_model(training:bool):
         arch_args = config["model_architecture"].copy()
+        frame_window = arch_args.pop("frame_window", 0)
+        next = arch_args.pop("next", True)
         skip_connections = arch_args.pop("skip_connections", True)
         nchan, nlabel = get_input_channel_and_label(config)
         n_inputs = nchan + 2 * nlabel # for each label: edm and gcdm are computed
         if arch_args.get("architecture_type", "blend").lower() == "enc_dec":
-            arch_args["architecture_type"] = "blend" # enc_dec is similar to distnet2d blend architecture, wihtout the blending part
+            arch_args["architecture_type"] = "blend" # enc_dec is similar to distnet2d blend architecture, without the blending part
         shape = config["dataset_parameters"]["input_shape"]
         input_shape = [None if s <= 0 else s for s in shape]
         arch_args["spatial_dimensions"] = input_shape
@@ -249,7 +268,26 @@ if __name__ == "__main__":
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         seg_args = config.get("segmentation", {})
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
-        model = get_distnet_2d_seg(n_inputs=n_inputs, config=arch, skip_connections=skip_connections, shared_encoder=False, accum_steps=1, l2_reg=0, scale_edm = seg_args.get("scale_edm", False), category_number=category_number, category_class_weights=category_class_weights, cdm_loss_radius=cdm_loss_radius)
+
+        if frame_window > 0:
+            edm_max_weight = seg_args.get("edm_max_frequency_weight", 0) # edm freq weighting not supported yet for non-temporal version
+            edm_frequency_weights = get_edm_class_weights(config,  edm_max_weight) if training and edm_max_weight > 0 else None
+            if edm_frequency_weights is not None:
+                print(f"edm background/foreground balancing weights {edm_frequency_weights}")
+            model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next,
+                                   frame_window=frame_window, accum_steps=1, l2_reg=0,
+                                   edm_frequency_weights=edm_frequency_weights,
+                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
+                                   scale_edm=seg_args.get("scale_edm", False),
+                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True),
+                                   cdm_loss_radius=cdm_loss_radius,
+                                   link_multiplicity_class_weights=None,
+                                   category_number=category_number, category_class_weights=category_class_weights,
+                                   tracking = False,
+                                   inference_gap_number=0)
+
+        else:
+            model = get_distnet_2d_seg(n_inputs=n_inputs, config=arch, skip_connections=skip_connections, accum_steps=1, l2_reg=0, scale_edm = seg_args.get("scale_edm", False), category_number=category_number, category_class_weights=category_class_weights, cdm_loss_radius=cdm_loss_radius)
         if args.export_only:
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
@@ -261,9 +299,12 @@ if __name__ == "__main__":
 
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
-        model = init_model()
+        model = init_model(False)
         # export model
-        tf.saved_model.save(model, SAVED_MODEL_PATH)
+        if isinstance(model, DiSTNetModel):
+            model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+        else:
+            model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
         print("model saved", flush=True)
     else:
         print(f"init iterator...", flush=True)
@@ -347,7 +388,7 @@ if __name__ == "__main__":
             # init model
             print("init model...")
             with strategy.scope():
-                model = init_model()
+                model = init_model(True)
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
             # perform training
             test_it = None
@@ -411,8 +452,8 @@ if __name__ == "__main__":
                         print(f"cleaning temp models at {save_path}", flush=True)
                         shutil.rmtree(save_path)  # clean up for non chief worker
                 else:
-                    model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
-                    # model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+                    if isinstance(model, DiSTNetModel):
+                        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+                    else:
+                        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
                     print("model saved", flush=True)
-                    #tf.saved_model.save(model, SAVED_MODEL_PATH)
-                    #print("model saved", flush=True)
