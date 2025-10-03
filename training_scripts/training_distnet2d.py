@@ -51,9 +51,9 @@ if __name__ == "__main__":
     config = open_config_file(args.config_dir, RUN_TEST)
     t_p = config["training_parameters"]
     model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
-    WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
+    WEIGHT_PATH = os.path.join(args.config_dir,  model_name + ".h5")
     LOAD_WEIGHT_PATH = t_p["load_model_file"] if len(t_p.get("load_model_file", "")) > 0 else None
-    LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], model_name ) if len(t_p["log_dir"])>0 else os.path.join(args.config_dir, model_name )
+    LOG_PATH = os.path.join(args.config_dir, model_name )
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)

@@ -43,9 +43,9 @@ if __name__ == "__main__":
     CONFIG = open_config_file(args.config_dir, args.test_data_augmentation or args.test_predict)
     t_p = CONFIG["training_parameters"]
     MODEL_NAME = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
-    WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"], MODEL_NAME + ".h5") if len(t_p["weight_dir"]) > 0 else os.path.join(args.config_dir, MODEL_NAME + ".h5")
+    WEIGHT_PATH = os.path.join(args.config_dir, MODEL_NAME + ".h5")
     LOAD_WEIGHT_PATH = t_p["load_model_file"] if len(t_p.get("load_model_file", "")) > 0 else None
-    LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], MODEL_NAME) if len(t_p["log_dir"]) > 0 else os.path.join(args.config_dir, MODEL_NAME)
+    LOG_PATH = os.path.join(args.config_dir, MODEL_NAME)
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, MODEL_NAME)
     SCALING_FILE = os.path.join(args.config_dir, f"{MODEL_NAME}.scaling_parameters.json")
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 800)

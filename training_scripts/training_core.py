@@ -34,22 +34,6 @@ def open_config_file(config_dir:str, test:bool):
         config = json.loads(confg_s)
         config = convert_bool(config) # boolean are represented as string
     # ensure path are absolute and existing
-    weight_path = config["training_parameters"].get("weight_dir", "")
-    if len(weight_path) == 0:
-        weight_path = config_dir
-    elif not os.path.isabs(weight_path):
-        weight_path = os.path.join(config_dir, weight_path)
-    config["training_parameters"]["weight_dir"] = weight_path
-    if not os.path.exists(weight_path):
-        os.mkdir(weight_path)
-    log_path = config["training_parameters"].get("log_dir", "Logs")
-    if len(log_path) == 0:
-        log_path = config_dir
-    elif not os.path.isabs(log_path):
-        log_path = os.path.join(config_dir, log_path)
-    config["training_parameters"]["log_dir"] = log_path
-    if not os.path.exists(log_path):
-        os.mkdir(log_path)
     if "load_model_file" in config["training_parameters"]:
         if not os.path.isabs(config["training_parameters"]["load_model_file"]):
             config["training_parameters"]["load_model_file"] = os.path.join(config_dir, config["training_parameters"]["load_model_file"])

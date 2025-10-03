@@ -58,9 +58,9 @@ if __name__ == "__main__":
     config = open_config_file(args.config_dir, args.test_data_augmentation)
     t_p = config["training_parameters"]
     model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
-    WEIGHT_PATH = os.path.join(args.config_dir, t_p["weight_dir"],  model_name  + ".h5") if len(t_p["weight_dir"])>0 else os.path.join(args.config_dir,  model_name + ".h5")
+    WEIGHT_PATH = os.path.join(args.config_dir,  model_name + ".h5")
     LOAD_WEIGHT_PATH = t_p["load_model_file"] if len(t_p.get("load_model_file", "")) > 0 else None
-    LOG_PATH = os.path.join(args.config_dir, t_p["log_dir"], model_name ) if len(t_p["log_dir"])>0 else os.path.join(args.config_dir, model_name )
+    LOG_PATH = os.path.join(args.config_dir, model_name )
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
@@ -145,6 +145,8 @@ if __name__ == "__main__":
         use_gdcm = seg_args.get("center_distance_mode", "GEODESIC") == "GEODESIC"
         center_mode = seg_args.get("center_mode", "MEDOID")
         scale_edm = seg_args.get("scale_edm", False)
+        input_label_center_idx = seg_args.get("input_label_center_idx", -1) # use center from input label instead of center from target label
+
         assert center_mode in ["MEDOID", "GEOMETRICAL"], f"Invalid center mode = {center_mode} should be either MEDOID or GEOMETRICAL"
 
         def edm_fun(labels):
@@ -172,8 +174,13 @@ if __name__ == "__main__":
             else:
                 return center_of_mass(labels, labels, all_labels)
 
-        def gcdm_fun(labels):
-            centers = get_centers(labels)
+        def get_centers_bc(batch):
+            centers_bc = []
+            for b in range(batch.shape[0]):
+                centers_bc.append([get_centers(batch[b,...,c]) for c in range(batch.shape[-1])])
+            return centers_bc
+
+        def gcdm_fun(labels, centers):
             count = 0
             m = np.ones_like(labels)
             for center in centers:
@@ -186,26 +193,53 @@ if __name__ == "__main__":
             else:
                 return np.zeros_like(labels, dtype=np.float32)
 
-        def ecdm_fun(labels):
-            centers = get_centers(labels)
+        def ecdm_fun(labels, centers):
             edcm = np.zeros_like(labels, dtype=np.float32)
             compute_edm(centers, edcm)
             return edcm
 
-        def apply_batchwise(fun):
+        def apply_bc_wise(fun, center_bc=None):
             def result_fun(batch):
-                images = [fun(batch[b,...,0]) for b in range(batch.shape[0])]
-                batch_res = np.stack(images, 0)
-                return np.expand_dims(batch_res, -1)
+                images = [apply_c_wise(batch[b], fun, center_c=center_bc[b] if center_bc is not None else None) for b in range(batch.shape[0])]
+                return np.stack(images, 0)
             return result_fun
+
+        def apply_c_wise(batch, fun, center_c=None):
+            if center_c is None:
+                images = [fun(batch[...,c]) for c in range(batch.shape[-1])]
+            else:
+                images = [fun(batch[...,c], centers=center_c[c]) for c in range(batch.shape[-1])]
+            return np.stack(images, -1)
 
         label_idx = len(channel_names) + 1
         label_cidx = [label_idx + ci for ci in range(len(label_names))]
-        cat_idx = len(channel_names) + 1 + len(label_names)
+        channel_keywords = [channel_names[0], '/regionLabels'] + channel_names[1:] + label_names
+        cdm_idx = len(channel_keywords)
+        channel_keywords.append(None)  # placeholder
+        input_cdm_idx = []
+        for ci in range(len(label_names)):
+            input_cdm_idx.append(len(channel_keywords))
+            channel_keywords.append(None)
+
+        cat_idx = len(channel_keywords)
+        if category_number > 1:
+            channel_keywords.append(None) # placeholder
 
         def pp_fun(batch_by_channel):
             if illu_fun is not None:
                 illu_fun(batch_by_channel)
+
+            # compute input CDM
+            center_lbc = []
+            for ci, co in zip(label_cidx, input_cdm_idx):
+                center_bc = get_centers_bc(batch_by_channel[ci])
+                batch_by_channel[co] = apply_bc_wise(gcdm_fun, center_bc)(batch_by_channel[ci])
+                center_lbc.append(center_bc)
+
+            # compute output CDM
+            centers_bc = get_centers_bc(batch_by_channel[1]) if input_label_center_idx < 0 else center_lbc[input_label_center_idx] #  use pre-computed centers on input label
+            batch_by_channel[cdm_idx] = apply_bc_wise(gcdm_fun if use_gdcm else ecdm_fun, center_bc = centers_bc)(batch_by_channel[1])
+
             if category_number > 1:
                 categoryArray = batch_by_channel['arrays'][0]
                 labelIm = batch_by_channel[1]
@@ -223,24 +257,42 @@ if __name__ == "__main__":
                         if l != 0:
                             cIm[ lIm == l ] = cA[int(round(l)) - 1] + 1
                 batch_by_channel[cat_idx] = catIm
-        print(f"channels : {[channel_names[0], '/regionLabels'] + channel_names[1:] + label_names} inputs: {[0] + [1 + ci for ci in range(1, len(channel_names))] + [ci for ci in label_cidx for _ in range(2)]} outputs: {[1, 1, cat_idx] if category_number > 1 else [1, 1]} mask: {[1] + label_cidx}")
+
+        input_channels = [0] + [1 + ci for ci in range(1, len(channel_names))] + [ci_edm if idx == 0 else ci_cdm for ci_edm, ci_cdm in zip(label_cidx, input_cdm_idx) for idx in range(2)]
+        output_channels = [1, cdm_idx]  # cdm_idx / cat_idx = placeholders for cdm / category computed in post_processing fun
+        if category_number > 1:
+            output_channels.append(cat_idx)
+        n_placeholders = 1 + len(label_names) + int(category_number > 1)
+
+        print(  f"channels : {channel_keywords} inputs: {input_channels} outputs: {output_channels} mask: {[1] + label_cidx}")
         iterator_params = dict(dataset=dataset,
-                               channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:] + label_names,
+                               channel_keywords=channel_keywords,
                                array_keywords = [ARRAY_KEYWORDS[1]] if category_number > 1 else None,
                                group_keyword=ds_conf.get("keyword", None),
-                               input_channels=[0] + [1 + ci for ci in range(1, len(channel_names))] + [ci for ci in label_cidx for _ in range(2)], # edm / cdm
-                               output_channels=[1, 1, cat_idx] if category_number > 1 else [1, 1], # cat_idx = placeholder for category computed in post_processing fun
+                               input_channels=input_channels, # edm / cdm
+                               output_channels=output_channels,
                                mask_channels=[1] + label_cidx,
                                batch_size=batch_size, step_number=step_number,
                                extract_tile_function=extract_tiles_fun, shuffle=kwargs.get("shuffle", True),
-                               image_data_generators=[data_generators[0], mask_generator] + data_generators[1:] + data_gen_input_label,
+                               image_data_generators=[data_generators[0], mask_generator] + data_generators[1:] + data_gen_input_label + [None]*n_placeholders,
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                                channels_postprocessing_function=pp_fun,
-                               input_postprocessing_functions = [None]*len(channel_names) + [apply_batchwise(edm_fun) if idx==0 else apply_batchwise(gcdm_fun) for _ in label_cidx for idx in range(2)],
-                               output_postprocessing_functions=[apply_batchwise(edm_fun_out), apply_batchwise(gcdm_fun if use_gdcm else ecdm_fun)] + ([None] if category_number > 1 else []),
+                               input_postprocessing_functions = [None]*len(channel_names) + [apply_bc_wise(edm_fun) if idx==0 else None for _ in label_cidx for idx in range(2)],
+                               output_postprocessing_functions=[apply_bc_wise(edm_fun_out), None] + ([None] if category_number > 1 else []),
                                void_mask_proportion=[0, 0] if exclude_void else None,
                                memory_persistent=memory_persistent)
-        return MultiChannelIterator(**iterator_params)
+
+        frame_window = config["model_architecture"].get("frame_window", 0)
+        if frame_window <= 0:
+            return MultiChannelIterator(**iterator_params)
+        else:
+            next = config["model_architecture"].get("next", True)
+            return TrackingIterator(
+                channels_prev=[True] * len(channel_keywords),
+                channels_next=[next] * len(channel_keywords),
+                n_frames=frame_window,
+                frame_subsampling=data_aug_params.get("frame_subsampling", 1),
+                **iterator_params)
 
     def get_edm_class_weights(config: dict, max_weight:float):
         counts = np.array([0, 0], dtype="float128")
@@ -253,7 +305,6 @@ if __name__ == "__main__":
         arch_args = config["model_architecture"].copy()
         frame_window = arch_args.pop("frame_window", 0)
         next = arch_args.pop("next", True)
-        skip_connections = arch_args.pop("skip_connections", True)
         nchan, nlabel = get_input_channel_and_label(config)
         n_inputs = nchan + 2 * nlabel # for each label: edm and gcdm are computed
         if arch_args.get("architecture_type", "blend").lower() == "enc_dec":
@@ -277,17 +328,17 @@ if __name__ == "__main__":
             model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next,
                                    frame_window=frame_window, accum_steps=1, l2_reg=0,
                                    edm_frequency_weights=edm_frequency_weights,
-                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
+                                   edm_derivative_loss=False, #seg_args.get("edm_derivatives", True), # TODO implement or remove parameter
                                    scale_edm=seg_args.get("scale_edm", False),
-                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True),
+                                   cdm_derivative_loss=False, #seg_args.get("cdm_derivatives", True), # TODO implement or remove parameter
                                    cdm_loss_radius=cdm_loss_radius,
                                    link_multiplicity_class_weights=None,
                                    category_number=category_number, category_class_weights=category_class_weights,
-                                   tracking = False,
-                                   inference_gap_number=0)
+                                   tracking = False)
+            print(f"inputs: {[i.shape for i in model.inputs]} outputs: {[i.shape for i in model.outputs]}")
 
-        else:
-            model = get_distnet_2d_seg(n_inputs=n_inputs, config=arch, skip_connections=skip_connections, accum_steps=1, l2_reg=0, scale_edm = seg_args.get("scale_edm", False), category_number=category_number, category_class_weights=category_class_weights, cdm_loss_radius=cdm_loss_radius)
+        else: # TODO only use get_distnet_2d even for 0 frames
+            model = get_distnet_2d_seg(n_inputs=n_inputs, config=arch, accum_steps=1, l2_reg=0, scale_edm = seg_args.get("scale_edm", False), category_number=category_number, category_class_weights=category_class_weights, cdm_loss_radius=cdm_loss_radius)
         if args.export_only:
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
@@ -359,14 +410,10 @@ if __name__ == "__main__":
             # Define the training distribution strategy
             if args.strategy == "multiworker-slurm":
                 # build multi-worker environment from Slurm variables
-                cluster_resolver = tf.distribute.cluster_resolver.SlurmClusterResolver(
-                    port_base=15000
-                )
+                cluster_resolver = tf.distribute.cluster_resolver.SlurmClusterResolver( port_base=15000 )
 
                 # use NCCL communication protocol
-                implementation = (
-                    tf.distribute.experimental.CommunicationImplementation.NCCL
-                )
+                implementation = tf.distribute.experimental.CommunicationImplementation.NCCL
                 communication_options = tf.distribute.experimental.CommunicationOptions(
                     timeout_seconds=0.0,
                     implementation=implementation,
