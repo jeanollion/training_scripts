@@ -320,25 +320,22 @@ if __name__ == "__main__":
         seg_args = config.get("segmentation", {})
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
 
-        if frame_window > 0:
-            edm_max_weight = seg_args.get("edm_max_frequency_weight", 0) # edm freq weighting not supported yet for non-temporal version
-            edm_frequency_weights = get_edm_class_weights(config,  edm_max_weight) if training and edm_max_weight > 0 else None
-            if edm_frequency_weights is not None:
-                print(f"edm background/foreground balancing weights {edm_frequency_weights}")
-            model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next,
-                                   frame_window=frame_window, accum_steps=1, l2_reg=0,
-                                   edm_frequency_weights=edm_frequency_weights,
-                                   edm_derivative_loss=False, #seg_args.get("edm_derivatives", True), # TODO implement or remove parameter
-                                   scale_edm=seg_args.get("scale_edm", False),
-                                   cdm_derivative_loss=False, #seg_args.get("cdm_derivatives", True), # TODO implement or remove parameter
-                                   cdm_loss_radius=cdm_loss_radius,
-                                   link_multiplicity_class_weights=None,
-                                   category_number=category_number, category_class_weights=category_class_weights,
-                                   tracking = False)
-            print(f"inputs: {[i.shape for i in model.inputs]} outputs: {[i.shape for i in model.outputs]}")
+        edm_max_weight = seg_args.get("edm_max_frequency_weight", 0) # edm freq weighting not supported yet for non-temporal version
+        edm_frequency_weights = get_edm_class_weights(config,  edm_max_weight) if training and edm_max_weight > 0 else None
+        if edm_frequency_weights is not None:
+            print(f"edm background/foreground balancing weights {edm_frequency_weights}")
+        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next,
+                               frame_window=frame_window, accum_steps=1, l2_reg=0,
+                               edm_frequency_weights=edm_frequency_weights,
+                               edm_derivative_loss=False,
+                               scale_edm=seg_args.get("scale_edm", False),
+                               cdm_derivative_loss=False,
+                               cdm_loss_radius=cdm_loss_radius,
+                               link_multiplicity_class_weights=None,
+                               category_number=category_number, category_class_weights=category_class_weights,
+                               tracking = False)
+        print(f"inputs: {[i.shape for i in model.inputs]} outputs: {[i.shape for i in model.outputs]}")
 
-        else: # TODO only use get_distnet_2d even for 0 frames
-            model = get_distnet_2d_seg(n_inputs=n_inputs, config=arch, accum_steps=1, l2_reg=0, scale_edm = seg_args.get("scale_edm", False), category_number=category_number, category_class_weights=category_class_weights, cdm_loss_radius=cdm_loss_radius)
         if args.export_only:
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)

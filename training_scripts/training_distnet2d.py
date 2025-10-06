@@ -60,8 +60,8 @@ if __name__ == "__main__":
     PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
     MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
-    EPSILON_RANGE = t_p.get("epsilon_range", [1e-7, 1e-7])
-    EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
+    EPSILON = 1e-7
+
     if args.strategy == "multiworker-slurm":
         WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
     else:
@@ -75,6 +75,7 @@ if __name__ == "__main__":
     def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
         data_aug_params = ds_conf.get("data_augmentation", {})
         seg_args = config.get("segmentation", {})
+        tracking = not seg_args.get("segment_only", False)
         arch_params = config["model_architecture"]
         category_number = arch_params.get("category_number", 0)
         channel_names = ds_conf.get("channel_name", "raw")
@@ -132,18 +133,23 @@ if __name__ == "__main__":
                 pp_fun_list.append(data_generator_to_channel_postprocessing_fun(get_image_data_generator(illumination_parameters=ip), [0 if cidx ==0 else cidx + 1])) # channel #1 is reserved to labels
 
         pp_fun = chain_pp_fun(pp_fun_list)
+        fw = arch_params["frame_window"]
         iterator_params = dict(erase_edge_cell_size=data_aug_params.get("erase_edge_cell_size", 0),
                                aug_remove_prob=data_aug_params.get("static_probability", 0.01),
-                               next=arch_params.get("next", True),
+                               next_frames=arch_params.get("next", True),
                                scale_edm = seg_args.get("scale_edm", False),
                                center_mode=seg_args.get("center_mode", "MEDOID"),
                                center_distance_mode=seg_args.get("center_distance_mode", "GEODESIC"),
-                               frame_window=arch_params.get("frame_window", 3),
+                               frame_window=fw,
                                image_data_generators=[data_generators[0], mask_generator] + data_generators[1:],
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
+                               void_mask_proportion = [0, 0] if fw == 0 else None, # exclude empty frame, only when no frame window
                                channels_postprocessing_function=pp_fun, verbose=False and RUN_TEST, memory_persistent=memory_persistent)
+        array_kw = (ARRAY_KEYWORDS[:1] if tracking else []) + (ARRAY_KEYWORDS[1:] if category_number>1 else [])
         return DyDxIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
-                            input_label_keywords=label_names, array_keywords=ARRAY_KEYWORDS[:1] if category_number<=1 else ARRAY_KEYWORDS,
+                            input_label_keywords=label_names, array_keywords=array_kw,
+                            input_label_center_idx = seg_args.get("input_label_center_idx", -1),
+                            tracking = tracking,
                             group_keyword=ds_conf.get("keyword", None),
                             batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=seg_args.get("edm_derivatives", True),
                             aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
@@ -181,13 +187,14 @@ if __name__ == "__main__":
         next = arch_args.pop("next", True)
         inference_gap_number = arch_args.pop("inference_gap_number", 0)
         seg_args = config.get("segmentation", {})
+        tracking = not seg_args.get("segment_only", False)
         shape = config["dataset_parameters"]["input_shape"]
         input_shape = [None if s <= 0 else s for s in shape]
         arch_args["spatial_dimensions"] = input_shape.copy()
         nchan, nlabel = get_input_channel_and_label(config)
         n_inputs = nchan + nlabel * 2 # for each label EDM and GDCM are added
-        link_multiplicity_class_weights = get_link_multiplicity_class_weights(config, max_weight = 50) if training else None
-        if training:
+        link_multiplicity_class_weights = get_link_multiplicity_class_weights(config, max_weight = 50) if training and tracking else None
+        if training and tracking:
             print(f"link multiplicity weights: { {l:w for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
         category_number = arch_args.pop("category_number", 0)
         category_class_weights = get_category_class_weights(config, category_number, category_keyword=ARRAY_KEYWORDS[1], max_weight=10) if training and category_number > 1 else None
@@ -199,7 +206,7 @@ if __name__ == "__main__":
             print(f"edm background/foreground balancing weights {edm_frequency_weights}")
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
-        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights, edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number)
+        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, tracking=tracking, accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights, edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number)
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
@@ -282,7 +289,7 @@ if __name__ == "__main__":
                     print(f"{i + 1}/{n_iterations}", flush=True)
             else: # test predict
                 model = init_model(False)
-                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
+                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
                 input, _ = train_it[idx]
                 output = model.predict(input)
                 inputs.append(input)
@@ -313,7 +320,7 @@ if __name__ == "__main__":
 
         elif args.compute_metrics:
             model = init_model(False)
-            model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
+            model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
             predict_fun = lambda x: model(x, training=False)
             hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False)
             configure_metrics_iterator(hsm_it)
@@ -361,7 +368,7 @@ if __name__ == "__main__":
 
             with strategy.scope():
                 model = init_model(training=True)
-                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
+                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
             
             # perform training
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
@@ -372,9 +379,6 @@ if __name__ == "__main__":
                 callbacks.append(tensorboard_callback)
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
             callbacks.append(log_cb)
-            if EPSILON_RANGE[1] != EPSILON_RANGE[0]:
-                eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
-                callbacks.append(eps_schedule)
             hard_sample_mining_param = t_p.get("hard_sample_mining", None)
             if hard_sample_mining_param is not None:
                 predict_fun = lambda x: model(x, training=False)
