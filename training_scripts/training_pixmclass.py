@@ -274,7 +274,7 @@ if __name__ == "__main__":
                     enq = OrderedEnqueuerCF(train_it, shuffle=True) #, name="train_gen"
                     enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
                     gen = enq.get()
-                    if test_it is not None: # TODO syncronize test gen and train gen
+                    if test_it is not None: # TODO synchronize test gen and train gen
                         test_enq = OrderedEnqueuerCF(test_it, shuffle=False) #, name="test_gen"
                         test_enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
                         test_gen = test_enq.get()

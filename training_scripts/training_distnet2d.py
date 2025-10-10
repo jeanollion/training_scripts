@@ -98,7 +98,7 @@ if __name__ == "__main__":
         batch_size = ds_conf["batch_size"]
         if "tiling_parameters" in ds_conf:
             tiling_parameters = ds_conf["tiling_parameters"]
-            if "anchor_point_mask_idx" in tiling_parameters:
+            if "anchor_point_mask_idx" in tiling_parameters and tiling_parameters["anchor_point_mask_idx"] is not None:
                 anchor_point_mask_idx = tiling_parameters["anchor_point_mask_idx"]
                 # channel order is : raw, label, *additional_channels, *additional_labels
                 if anchor_point_mask_idx == 0:
@@ -224,26 +224,33 @@ if __name__ == "__main__":
 
     def configure_metrics_iterator(iterator):
         def fun(it):
-            it.return_central_only=True
+            it.output_central_only=True
             it.incomplete_last_batch_mode = 0
             it.return_label_rank = True
+            it.disable_random_transforms(True, True)
         set_to_iterator(iterator, fun)
 
 
-    def metrics_fun(center_scale, frame_window, long_range:bool=True):
-        metrics_fun_ = get_metrics_fun(center_scale=center_scale)
-        def fun(y_true, y_pred):
-            fw = frame_window
-            n_frame_pairs = fw * 2
-            if long_range:
-                n_frame_pairs += (fw - 1) * 2
-            d_indices = [fw - 1, n_frame_pairs + fw]
-            lm_indices = [d_indices[0] * 3 + i for i in range(3)] + [d_indices[1] * 3 + i for i in range(3)]
-            return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1],
-                                tf.gather(y_pred[2], indices=d_indices, axis=-1),
-                                tf.gather(y_pred[3], indices=d_indices, axis=-1),
-                                tf.gather(y_pred[4], indices=lm_indices, axis=-1), y_true[0], y_true[2], y_true[3],
-                                y_true[4], y_true[5], y_true[6], y_true[7])
+    def metrics_fun(center_scale, frame_window, category_number:int=0, long_range:bool=True, tracking:bool=True):
+        metrics_fun_ = get_metrics_fun(center_scale=center_scale, category=category_number>1, tracking=tracking)
+        if tracking:
+            def fun(y_true, y_pred):
+                fw = frame_window
+                n_frame_pairs = fw * 2
+                if long_range:
+                    n_frame_pairs += (fw - 1) * 2
+                d_indices = [fw - 1, n_frame_pairs + fw] # BW & FW (verified)
+                lm_indices = [d_indices[0] * 3 + i for i in range(3)] + [d_indices[1] * 3 + i for i in range(3)] # BW & FW (link multiplicity: 3 categories each: single, multiple, null)
+                return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1], y_pred[5][..., fw*category_number:(fw+1)*category_number] if category_number>1 else None,
+                                    tf.gather(y_pred[2], indices=d_indices, axis=-1),
+                                    tf.gather(y_pred[3], indices=d_indices, axis=-1),
+                                    tf.gather(y_pred[4], indices=lm_indices, axis=-1), y_true[0], y_true[5] if category_number>1 else None, y_true[2], y_true[3],
+                                    y_true[4], y_true[-3], y_true[-2], y_true[-1])
+        else:
+            def fun(y_true, y_pred):
+                fw = frame_window
+                return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1], y_pred[2][..., fw*category_number:(fw+1)*category_number] if category_number>1 else None,
+                                    y_true[0], y_true[2] if category_number>1 else None, y_true[-2], y_true[-1])
         return fun
 
 
@@ -322,16 +329,32 @@ if __name__ == "__main__":
             model = init_model(False)
             model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
             predict_fun = lambda x: model(x, training=False)
-            hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False)
+            hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False, hsm=True)
             configure_metrics_iterator(hsm_it)
             hard_sample_mining_param = t_p.get("hard_sample_mining", {})
             center_scale = hard_sample_mining_param.get("center_scale", 4) if hard_sample_mining_param is not None else 4
-            metrics = compute_metrics(hsm_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+            seg_args = config.get("segmentation", {})
+            tracking = not seg_args.get("segment_only", False)
+            category_number = config["model_architecture"].get("category_number", 0)
+            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, tracking=tracking), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+            if isinstance(batch_size, (list, tuple)):
+                tile_column = np.concatenate([np.tile(np.arange(n_t), b_s) for b_s, n_t in zip(batch_size, n_tiles)], axis=0)
+            else:
+                tile_column = np.tile(np.arange(n_tiles), batch_size)
+            header = "IoU;CenterPosition;CenterValue"
+            if category_number > 1:
+                header +=";Category"
+            if tracking:
+                header += ";DisplacementL2;LinkMultiplicity"
+            if np.any(tile_column != 0):
+                header += ";Tile"
+                tile_column = tile_column[..., np.newaxis]
+                metrics = np.concatenate([metrics, tile_column.astype(metrics.dtype)], axis=1)
             root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
             path = os.path.join(root_path, "metrics.csv")
             print(f"saving metrics of shape: {metrics.shape} to path: {path}", flush=True)
             #print(f"shm n files: {get_shm_nfiles()}")
-            np.savetxt(path, metrics, delimiter=";", header="IoU;CenterPosition;CenterValue;DisplacementL2;LinkMultiplicity")
+            np.savetxt(path, metrics, delimiter=";", header=header)
         else: # training
             train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
             # Define the training distribution strategy
@@ -388,9 +411,12 @@ if __name__ == "__main__":
                 center_scale = hard_sample_mining_param.get("center_scale", 4)
                 start_from = hard_sample_mining_param.get("start_from_epoch", 0)
                 print("init hsm iterator...", flush=True)
-                hsm_it = get_iterator(config, init_iterator, existing_iterator=train_it, step_number=0, shuffle=False) # needs to be a different iterator as iterator.return_central_only
+                hsm_it = get_iterator(config, init_iterator, existing_iterator=train_it, step_number=0, shuffle=False, hsm=True) # needs to be a different iterator as iterator.return_central_only
                 configure_metrics_iterator(hsm_it)
-                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3)), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), disable_channel_postprocessing=True, verbose=2)
+                seg_args = config.get("segmentation", {})
+                tracking = not seg_args.get("segment_only", False)
+                arch_params = config["model_architecture"]
+                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), tracking=tracking), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
                 callbacks.append(hsm_cb)
 
             else:

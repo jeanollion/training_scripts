@@ -1,9 +1,12 @@
 import copy
 import json, os
 import subprocess
+from math import ceil
+
 from dataset_iterator import ConcatIterator
+from dataset_iterator.tile_utils import OVERLAP_MODE
 from dataset_iterator.utils import transpose_list, is_null, ensure_multiplicity, is_list
-from dataset_iterator.helpers import get_optimal_tiling
+from dataset_iterator.helpers import get_optimal_tiling, get_image_shape
 from dataset_iterator.datasetIO import get_datasetIO, MemoryIO
 import numpy as np
 
@@ -50,9 +53,11 @@ def open_config_file(config_dir:str, test:bool):
             for ds_params in config["dataset_list"]:
                 if "tiling_parameters" in ds_params: # replace random tiling by constant tiling
                     tiling_parameters = ds_params["tiling_parameters"]
-                    if not is_null(tiling_parameters.get("random_channel_jitter_shape", None), 0) or tiling_parameters.get("perform_augmentation", False) or tiling_parameters.get("random_stride", False) or not is_null(tiling_parameters.get("zoom_range", 1)):
-                        tiling_parameters = {"n_tiles": 1, "perform_augmentation": False, "random_stride": False, "zoom_range": [1, 1], "random_channel_jitter_shape": [0, 0]}
-                        ds_params["tiling_parameters"] = tiling_parameters
+                    tiling_parameters["random_channel_jitter_shape"] = None
+                    tiling_parameters["perform_augmentation"] = False
+                    tiling_parameters["random_stride"] = False
+                    tiling_parameters["zoom_range"] = 1
+                    tiling_parameters["n_tiles"] = 1
     # copy global dataset parameters to individual datasets
     for i in range(len(config["dataset_list"])):
         config["dataset_list"][i] = merge_dicts(config["dataset_list"][i], config["dataset_parameters"])
@@ -113,6 +118,7 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
         datasetIO_list = None
     step_number = kwargs.pop("step_number", config["training_parameters"]["step_number"])
     kwargs["dataset_type"] = dataset_type
+    hsm = kwargs.pop("hsm", False)
     input_shape = config["dataset_parameters"].get("input_shape", None)
     if input_shape is not None:
         ensure_multiplicity(2, input_shape)
@@ -123,24 +129,37 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
         if ds_conf.get("type", "TRAIN") == dataset_type:
             batch_size = config["dataset_parameters"]["batch_size"]
             tiling_parameters = ds_conf.get("tiling_parameters", None)
-            if tiling_parameters is not None:
+            if tiling_parameters is not None: # adjust n_tiles and batch size to match target batch_size
                 assert input_shape is not None, "when tiling parameters are provided, input_shape must be provided"
                 tiling_parameters["tile_shape"] = input_shape
                 n_tiles = tiling_parameters.get("n_tiles", -1)
-                if n_tiles <= 0:
+                tile_overlap_fraction = tiling_parameters.pop("tile_overlap_fraction", 1. / 4)
+                if n_tiles <= 0 or hsm:
                     dataset = ds_conf["path"] if datasetIO_list is None or datasetIO_list[i]is None else datasetIO_list[i]
                     channel_name = ds_conf.get("channel_name", "raw")
                     if is_list(channel_name):
                         channel_name = channel_name[0]
-                    batch_size, n_tiles = get_optimal_tiling(dataset, channel_name, batch_size, input_shape, group_keyword=ds_conf.get("keyword", None), tile_overlap_fraction=tiling_parameters.pop("tile_overlap_fraction", 1. / 4))
-                    tiling_parameters["n_tiles"] = n_tiles
+                    if hsm: # HSM iterator will probe the whole image -> n_tiles is fixed -> deduce optimal batch_size
+                        image_shape = get_image_shape(dataset, channel_name, group_keyword=ds_conf.get("keyword", None))
+                        n_tiles = np.prod([int(ceil(image_shape[idx] / input_shape[idx])) for idx in range(len(image_shape))])
+                        batch_size = int(ceil(batch_size / n_tiles)) # accept a larger batch size because HSM has lower memory footprint than training
+                        #batch_size = max(1, batch_size // n_tiles) # TODO Change
+                        tiling_parameters["random_channel_jitter_shape"] = None
+                        tiling_parameters["perform_augmentation"] = False
+                        tiling_parameters["random_stride"] = False
+                        tiling_parameters["zoom_range"] = 1
+                        tiling_parameters["overlap_mode"] = OVERLAP_MODE[1]
+                        tiling_parameters["anchor_point_mask_idx"] = None
+                    else:
+                        batch_size, n_tiles = get_optimal_tiling(dataset, channel_name, batch_size, input_shape, group_keyword=ds_conf.get("keyword", None), tile_overlap_fraction=tile_overlap_fraction)
+                        tiling_parameters["n_tiles"] = n_tiles
                     ds_conf["batch_size"] = batch_size
                 else: # adjust batch size to match target batch size
                     assert batch_size % n_tiles == 0, f"Error at dataset {i} : batch_size = {batch_size} is not divisible by n_tiles = {n_tiles}"
                     batch_size = batch_size//n_tiles
                     ds_conf["batch_size"] = batch_size
                 if existing_iterator is None:
-                    print(f"dataset {i}: n_tiles={n_tiles} batch_size={batch_size}", flush=True)
+                    print(f"dataset {i}: n_tiles={n_tiles} batch_size={batch_size}{' (hsm)' if hsm else ''}", flush=True)
             if weight_limit is not None and "loss_weigh_range" not in ds_conf:
                 ds_conf["loss_weigh_range"] = weight_limit
             i+=1
