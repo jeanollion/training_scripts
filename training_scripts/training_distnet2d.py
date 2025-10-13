@@ -215,7 +215,7 @@ if __name__ == "__main__":
                 model.load_weights(WEIGHT_PATH)
             except Exception as e: # re-try in legacy mode
                 print(e)
-                model = model(True)
+                model = make_model(True)
                 model.load_weights(WEIGHT_PATH)
 
             print(f"Weights loaded : {WEIGHT_PATH}", flush=True)
@@ -227,14 +227,14 @@ if __name__ == "__main__":
                     model.set_weights(loaded_model.get_weights())
                 except Exception as e: # re-try in legacy mode
                     print(e)
-                    model = model(True)
+                    model = make_model(True)
                     model.set_weights(loaded_model.get_weights())
             else:
                 try:
                     model.load_weights(LOAD_WEIGHT_PATH)
                 except Exception as e: # re-try in legacy mode
                     print(e)
-                    model = model(True)
+                    model = make_model(True)
                     model.load_weights(LOAD_WEIGHT_PATH)
             print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
         return model
