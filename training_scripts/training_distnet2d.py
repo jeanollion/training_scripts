@@ -206,18 +206,36 @@ if __name__ == "__main__":
             print(f"edm background/foreground balancing weights {edm_frequency_weights}")
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
-        model = get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, tracking=tracking, accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights, edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number)
+        def make_model(legacy:bool=False):
+            return get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, tracking=tracking, accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights, edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number, legacy_multi_input_arch = legacy)
+        model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
-            model.load_weights(WEIGHT_PATH)
+            try:
+                model.load_weights(WEIGHT_PATH)
+            except Exception as e: # re-try in legacy mode
+                print(e)
+                model = model(True)
+                model.load_weights(WEIGHT_PATH)
+
             print(f"Weights loaded : {WEIGHT_PATH}", flush=True)
         elif LOAD_WEIGHT_PATH is not None or args.compute_metrics or args.test_predict :
             assert os.path.exists(LOAD_WEIGHT_PATH), f"weights {LOAD_WEIGHT_PATH} not found"
             if os.path.isdir(LOAD_WEIGHT_PATH):
                 loaded_model = tf.keras.models.load_model(LOAD_WEIGHT_PATH)
-                model.set_weights(loaded_model.get_weights())
+                try:
+                    model.set_weights(loaded_model.get_weights())
+                except Exception as e: # re-try in legacy mode
+                    print(e)
+                    model = model(True)
+                    model.set_weights(loaded_model.get_weights())
             else:
-                model.load_weights(LOAD_WEIGHT_PATH)
+                try:
+                    model.load_weights(LOAD_WEIGHT_PATH)
+                except Exception as e: # re-try in legacy mode
+                    print(e)
+                    model = model(True)
+                    model.load_weights(LOAD_WEIGHT_PATH)
             print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
         return model
 
