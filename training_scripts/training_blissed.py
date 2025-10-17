@@ -1,4 +1,4 @@
-import os
+import os, sys
 os.environ["KERAS_BACKEND"] = "tensorflow"
 os.environ["TF_USE_LEGACY_KERAS"]="1"
 import json
@@ -18,10 +18,13 @@ from ssnb_denoising.training import train_denoiser, get_train_iterator, get_coll
 from ssnb_denoising.datasets.evaluation import get_eval_iterator, evaluate_model, get_scaling_fun
 from ssnb_denoising.models import get_dnet, get_dnet_multiframe, get_convolution, BlindDenoiser
 from ssnb_denoising.models.dnet_n2n import get_dnet_n2n
-from training_core import open_config_file, get_iterator, should_load_dataset_in_shm
+from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, check_requirements, \
+    compare_versions, print_requirement_error
 from tensorflow.keras.models import load_model
 
-__VERSION__ = '1.0.2'
+__VERSION__ = '1.0.3'
+__REQUIRES__ = ["dataset_iterator>=0.5.1", "ssnb_denoising>=0.1.1" ]
+
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
@@ -35,9 +38,20 @@ parser.add_argument("--n_epochs", type=int, help="number of training epochs")
 parser.add_argument("--step_number", type=int, help="number of training steps per epoch")
 parser.add_argument("--learning_rate", type=float, help="initial learning rate for training")
 parser.add_argument("--min_learning_rate", type=float, help="minimal learning rate for training")
+parser.add_argument("--min_script_version", type=str, help="minimal script version")
 
 if __name__ == "__main__":
     args = parser.parse_args()
+    # check script version and requirements:
+    if not check_requirements(__REQUIRES__):
+        sys.exit(1)
+    if args.min_script_version:
+        if compare_versions(__VERSION__, args.min_script_version) < 0:
+            print(f"script version is out-of-date: {__VERSION__} minimal version: {args.min_script_version}",
+                  flush=True)
+            print_requirement_error()
+            sys.exit(1)
+    print(  f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; BliSSeD version: {version('ssnb_denoising')}")
 
     # get parameters
     CONFIG = open_config_file(args.config_dir, args.test_data_augmentation or args.test_predict)
@@ -68,7 +82,6 @@ if __name__ == "__main__":
     if NOISE_CORRELATION_RANGE == 0 or (is_list(NOISE_CORRELATION_RANGE) and np.all([n==0 for n in NOISE_CORRELATION_RANGE])):
         NOISE_CORRELATION_RANGE = None
     PSF = DENOISING_PARAMETERS.get("psf", None)
-    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; BliSSeD version: {version('ssnb_denoising')}")
     print(f"configuration file found. ")
     print(f"Deconvolution: {'disabled' if PSF is None else ('model' if is_dict(PSF) else ('kernel' if is_list(PSF) else ('gaussian' if PSF>0 else 'trainable gaussian')))}")
     if NOISE_CORRELATION_KERNEL is None:

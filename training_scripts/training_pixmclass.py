@@ -16,12 +16,13 @@ from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 from dataset_iterator.keras_callbacks import EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
 from pix_mclass.unet import get_model
 from pix_mclass.utils import ensure_multiplicity
-from pix_mclass import get_unet
 from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
 import pix_mclass.training as pmt
-from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info
+from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info, check_requirements, \
+    compare_versions, print_requirement_error
 
-__VERSION__ = "1.1.2"
+__VERSION__ = "1.1.3"
+__REQUIRES__ = ["dataset_iterator>=0.5.5", "PixMClass>=0.1.4" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -37,9 +38,20 @@ parser.add_argument("--patience", type=int, help="patience for learning rate dec
 parser.add_argument("--learning_rate", type=float, help="initial learning rate for training")
 parser.add_argument("--min_learning_rate", type=float, help="minimal learning rate for training")
 parser.add_argument("--strategy", default="", type=str, help="distributed training strategy: multiworker-slurm or mirrored. Leave empty for default behaviour (single replica)")
+parser.add_argument("--min_script_version", type=str, help="minimal script version")
 
 if __name__ == "__main__":
     args = parser.parse_args()
+    # check script version and requirements:
+    if not check_requirements(__REQUIRES__):
+        sys.exit(1)
+    if args.min_script_version:
+        if compare_versions(__VERSION__, args.min_script_version) < 0:
+            print(f"script version is out-of-date: {__VERSION__} minimal version: {args.min_script_version}",
+                  flush=True)
+            print_requirement_error()
+            sys.exit(1)
+    print( f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; PixMClass version: {version('PixMClass')}")
 
     # get parameters
     config = open_config_file(args.config_dir, args.test_data_augmentation)
@@ -65,7 +77,6 @@ if __name__ == "__main__":
     SHUFFLE = not args.test_data_augmentation
     START_EPOCH = t_p.get("epoch_start", 0)
 
-    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; PixMClass version: {version('PixMClass')}")
     print(f"configuration file found. ")
 
     def init_iterator(ds_conf, step_number, dataset=None, dataset_type="TRAIN", **kwargs):

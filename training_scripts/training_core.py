@@ -1,7 +1,8 @@
 import copy
-import json, os
+import json, os, sys
 import subprocess
 from math import ceil
+import pkg_resources
 
 from dataset_iterator import ConcatIterator
 from dataset_iterator.tile_utils import OVERLAP_MODE
@@ -143,13 +144,14 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
                         image_shape = get_image_shape(dataset, channel_name, group_keyword=ds_conf.get("keyword", None))
                         n_tiles = np.prod([int(ceil(image_shape[idx] / input_shape[idx])) for idx in range(len(image_shape))])
                         batch_size = int(ceil(batch_size / n_tiles)) # accept a larger batch size because HSM has lower memory footprint than training
-                        #batch_size = max(1, batch_size // n_tiles) # TODO Change
+                        #batch_size = max(1, batch_size // n_tiles)
                         tiling_parameters["random_channel_jitter_shape"] = None
                         tiling_parameters["perform_augmentation"] = False
                         tiling_parameters["random_stride"] = False
                         tiling_parameters["zoom_range"] = 1
                         tiling_parameters["overlap_mode"] = OVERLAP_MODE[1]
-                        tiling_parameters["anchor_point_mask_idx"] = None
+                        if tiling_parameters.get("anchor_point_mask_idx") is not None: # only extract one tile with the anchor point in the middle
+                            tiling_parameters["n_tiles"] = 1
                     else:
                         batch_size, n_tiles = get_optimal_tiling(dataset, channel_name, batch_size, input_shape, group_keyword=ds_conf.get("keyword", None), tile_overlap_fraction=tile_overlap_fraction)
                         tiling_parameters["n_tiles"] = n_tiles
@@ -291,3 +293,38 @@ def compute_category_weights(counts:dict, max_weight = None):
         if max_weight is not None and max_weight > 0:
             class_weights[category] = min( class_weights[category], max_weight)
     return np.array([weight for _, weight in class_weights.items()])
+
+def check_requirements(requires:list):
+    for req in requires:
+        try:
+            pkg_resources.require(req)
+        except pkg_resources.DistributionNotFound:
+            print(f"Error: {req.split('>=')[0].split('==')[0].split('<=')[0].split('~=')[0].split('!=')[0].strip()} is not installed.")
+            print_requirement_error()
+            return False
+        except pkg_resources.VersionConflict as e:
+            print(f"Error: {e}")
+            print_requirement_error()
+            return False
+    return True
+
+def compare_versions(v1, v2):
+    # Split version strings into lists of integers
+    v1_parts = list(map(int, v1.split('.')))
+    v2_parts = list(map(int, v2.split('.')))
+
+    # Pad the shorter version with zeros for equal length comparison
+    max_length = max(len(v1_parts), len(v2_parts))
+    v1_parts += [0] * (max_length - len(v1_parts))
+    v2_parts += [0] * (max_length - len(v2_parts))
+
+    # Compare each part
+    for v1_part, v2_part in zip(v1_parts, v2_parts):
+        if v1_part > v2_part:
+            return 1
+        elif v1_part < v2_part:
+            return -1
+    return 0  # Versions are equal
+
+def print_requirement_error():
+    print(f"ERROR: Script requirements not met. Update your image or environment", file=sys.stderr, flush=True)

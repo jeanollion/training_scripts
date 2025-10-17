@@ -1,5 +1,5 @@
 import argparse
-import os
+import os, sys
 import shutil
 import platform
 import random
@@ -25,9 +25,12 @@ from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
-    get_shm_info, get_input_channel_and_label, get_category_class_weights, compute_category_weights
+    get_shm_info, get_input_channel_and_label, get_category_class_weights, compute_category_weights, check_requirements, \
+    print_requirement_error, compare_versions
 
-__VERSION__ = '1.1.3'
+__VERSION__ = '1.1.4'
+__REQUIRES__ = ["dataset_iterator>=0.5.5", "distnet2d>=0.2.2" ]
+
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
 parser.add_argument("--model_idx", type=int, help="index of model")
@@ -43,9 +46,20 @@ parser.add_argument("--patience", type=int, help="patience for learning rate dec
 parser.add_argument("--learning_rate", type=float, help="initial learning rate for training")
 parser.add_argument("--min_learning_rate", type=float, help="minimal learning rate for training")
 parser.add_argument("--strategy",default="",type=str,help="distributed training strategy: multiworker-slurm or mirrored. Leave empty for default behaviour (single replica)")
+parser.add_argument("--min_script_version", type=str, help="minimal script version")
 
 if __name__ == "__main__":
     args = parser.parse_args()
+    # check script version and requirements:
+    if not check_requirements(__REQUIRES__):
+        sys.exit(1)
+    if args.min_script_version:
+        if compare_versions(__VERSION__, args.min_script_version) < 0:
+            print(f"script version is out-of-date: {__VERSION__} minimal version: {args.min_script_version}", flush=True)
+            print_requirement_error()
+            sys.exit(1)
+    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')} python: {platform.python_version()}")
+
     RUN_TEST = args.test_data_augmentation or args.test_predict
     # get parameters
     config = open_config_file(args.config_dir, RUN_TEST)
@@ -69,7 +83,6 @@ if __name__ == "__main__":
     WORKERS = min(os.cpu_count(), WORKERS)
     SHUFFLE = not RUN_TEST
     START_EPOCH = t_p.get("start_epoch", 0)
-    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')} python: {platform.python_version()}")
     print(f"configuration file found. ")
 
     def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
