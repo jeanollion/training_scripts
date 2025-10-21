@@ -138,7 +138,12 @@ if __name__ == "__main__":
         pp_fun_list = []
         swim1D_params = data_aug_params.get("swim1d_parameters", None)
         if swim1D_params is not None:
-            pp_fun_list.append(get_swim1d_function(1, swim1D_params.get("distance", 50), swim1D_params.get("min_gap", 3), swim1D_params.get("closed_end", True)))
+            mask_channels = [1] + [cidx + len(channel_names) + 1 for cidx in range(0, len(label_names))]
+            pp_fun_list.append(get_swim1d_function(mask_channels,
+                                                   ref_mask_idx=swim1D_params.get("ref_mask_idx", 0),
+                                                   distance=swim1D_params.get("distance", 50),
+                                                   min_gap=swim1D_params.get("min_gap", 3),
+                                                   closed_end=swim1D_params.get("closed_end", True)))
         # perform illumination at the end: after elastic deform and swim
         illumination_parameters = data_aug_params.get("illumination_transform", [data_aug_params.get("illumination_parameters", None)])
         for cidx, ip in enumerate(illumination_parameters):
