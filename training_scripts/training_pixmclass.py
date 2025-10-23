@@ -22,7 +22,7 @@ from training_core import open_config_file, get_iterator, should_load_dataset_in
     compare_versions, print_requirement_error
 
 __VERSION__ = "1.1.3"
-__REQUIRES__ = ["dataset_iterator>=0.5.5", "PixMClass>=0.1.4" ]
+__REQUIRES__ = ["dataset_iterator>=0.5.5", "PixMClass>=0.1.5" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
