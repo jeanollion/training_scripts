@@ -267,8 +267,8 @@ if __name__ == "__main__":
         set_to_iterator(iterator, fun)
 
 
-    def metrics_fun(center_scale, frame_window, category_number:int=0, long_range:bool=True, tracking:bool=True):
-        metrics_fun_ = get_metrics_fun(center_scale=center_scale, category=category_number>1, tracking=tracking)
+    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, tracking:bool=True):
+        metrics_fun_ = get_metrics_fun(scale=scale, category=category_number>1, tracking=tracking)
         if tracking:
             def fun(y_true, y_pred):
                 fw = frame_window
@@ -368,16 +368,16 @@ if __name__ == "__main__":
             hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False, hsm=True)
             configure_metrics_iterator(hsm_it)
             hard_sample_mining_param = t_p.get("hard_sample_mining", {})
-            center_scale = hard_sample_mining_param.get("center_scale", 4) if hard_sample_mining_param is not None else 4
+            scale = hard_sample_mining_param.get("scale", hard_sample_mining_param.get("center_scale", 4) * 2) if hard_sample_mining_param is not None else 8
             seg_args = config.get("segmentation", {})
             tracking = not seg_args.get("segment_only", False)
             category_number = config["model_architecture"].get("category_number", 0)
-            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, tracking=tracking), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, tracking=tracking), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
             if isinstance(batch_size, (list, tuple)):
                 tile_column = np.concatenate([np.tile(np.arange(n_t), b_s) for b_s, n_t in zip(batch_size, n_tiles)], axis=0)
             else:
                 tile_column = np.tile(np.arange(n_tiles), batch_size)
-            header = "IoU;CenterPosition;CenterValue" # ;FPR
+            header = "IoU;FPR;CenterPosition;CenterValue" #
             if category_number > 1:
                 header +=";Category"
             if tracking:
@@ -444,7 +444,7 @@ if __name__ == "__main__":
                 period = hard_sample_mining_param.get("period", 0.1)
                 if period < 1:
                     period = int(N_EPOCHS * period)
-                center_scale = hard_sample_mining_param.get("center_scale", 4)
+                scale = hard_sample_mining_param.get("scale", hard_sample_mining_param.get("center_scale", 4) * 2)
                 start_from = hard_sample_mining_param.get("start_from_epoch", 0)
                 print("init hsm iterator...", flush=True)
                 hsm_it = get_iterator(config, init_iterator, existing_iterator=train_it, step_number=0, shuffle=False, hsm=True) # needs to be a different iterator as iterator.return_central_only
@@ -452,7 +452,7 @@ if __name__ == "__main__":
                 seg_args = config.get("segmentation", {})
                 tracking = not seg_args.get("segment_only", False)
                 arch_params = config["model_architecture"]
-                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(center_scale=center_scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), tracking=tracking), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
+                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), tracking=tracking), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
                 callbacks.append(hsm_cb)
 
             else:
