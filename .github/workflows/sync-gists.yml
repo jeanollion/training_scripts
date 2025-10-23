@@ -37,18 +37,6 @@ jobs:
                'training_distnet2d_dev.py' }}
           gist_description: Training script for DiSTNet2D
           github_file: training_scripts/training_distnet2d.py
-      - name: update training DiSTNet2D seg
-        uses: popsiclestick/gist-sync-action@v1.2.0
-        id: sync-distnet2dseg
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gist_url: https://gist.github.com/jeanollion/8035170d925598817be05dafbea05e89
-          gist_title: >
-            ${{ github.ref == 'refs/heads/master' &&
-               'training_distnet2d_seg.py' ||
-               'training_distnet2d_seg_dev.py' }}
-          gist_description: Training script for segmentation part of DiSTNet2D
-          github_file: training_scripts/training_distnet2d_seg.py
       - name: update training pixmclass
         uses: popsiclestick/gist-sync-action@v1.2.0
         id: sync-pixmclass
