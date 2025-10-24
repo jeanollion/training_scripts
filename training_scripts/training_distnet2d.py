@@ -268,7 +268,7 @@ if __name__ == "__main__":
 
 
     def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, tracking:bool=True):
-        metrics_fun_ = get_metrics_fun(scale=scale, category=category_number>1, tracking=tracking)
+        metrics_fun_ = get_metrics_fun(scale, category=category_number>1, tracking=tracking)
         if tracking:
             def fun(y_true, y_pred):
                 fw = frame_window
