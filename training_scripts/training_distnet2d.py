@@ -377,7 +377,7 @@ if __name__ == "__main__":
                 tile_column = np.concatenate([np.tile(np.arange(n_t), b_s) for b_s, n_t in zip(batch_size, n_tiles)], axis=0)
             else:
                 tile_column = np.tile(np.arange(n_tiles), batch_size)
-            header = "IoU;FPR;CenterPosition;CenterValue" #
+            header = "IoU;FPD;CenterPosition;CenterValue" #
             if category_number > 1:
                 header +=";Category"
             if tracking:
