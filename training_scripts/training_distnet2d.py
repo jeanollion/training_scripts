@@ -28,8 +28,8 @@ from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_i
     get_shm_info, get_input_channel_and_label, get_category_class_weights, compute_category_weights, check_requirements, \
     print_requirement_error, compare_versions
 
-__VERSION__ = '1.1.4'
-__REQUIRES__ = ["dataset_iterator>=0.5.5", "distnet2d>=0.2.2" ]
+__VERSION__ = '1.1.5'
+__REQUIRES__ = ["dataset_iterator>=0.5.6", "distnet2d>=0.2.3" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
