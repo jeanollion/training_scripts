@@ -278,9 +278,9 @@ def get_category_class_weights(config:dict, category_number:int, category_keywor
                 else:
                     raise ValueError(f"Category {category} is present in dataset: {p} whereas #{category_number} categories are expected")
         dataset.close()
-    return compute_category_weights(counts, max_weight)
+    return compute_category_weights(counts, max_weight=max_weight)
 
-def compute_category_weights(counts:dict, max_weight = None):
+def compute_category_weights(counts:dict, power_law:float=1, max_weight = None):
     # compute weights
     total_samples = sum(counts.values())
     num_classes = len(counts)
@@ -290,6 +290,9 @@ def compute_category_weights(counts:dict, max_weight = None):
         # Calculate weight as the total samples divided by (number of classes * number of samples in class)
         weight = total_samples / (num_classes * max(1, count))
         class_weights[category] = weight
+        if power_law is not None and power_law != 1:
+            assert power_law >= 0, "invalid power law"
+            class_weights[category] = class_weights[category] ** power_law
         if max_weight is not None and max_weight > 0:
             class_weights[category] = min( class_weights[category], max_weight)
     return np.array([weight for _, weight in class_weights.items()])

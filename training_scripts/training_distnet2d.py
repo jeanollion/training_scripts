@@ -22,6 +22,7 @@ from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
+from distnet_2d.utils.callbacks import ClassWeightScheduler
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
@@ -168,17 +169,18 @@ if __name__ == "__main__":
                             input_label_keywords=label_names, array_keywords=array_kw,
                             input_label_center_idx = seg_args.get("input_label_center_idx", -1),
                             tracking = tracking,
+                            frame_aware = arch_params.get("frame_aware", False),
                             group_keyword=ds_conf.get("keyword", None),
                             batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=seg_args.get("edm_derivatives", True),
                             aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
                             **iterator_params)
 
 
-    def get_edm_class_weights(config: dict, max_weight:float):
+    def get_edm_class_weights(config: dict, power_law:float = 1, max_weight:float=None):
         counts = np.array([0, 0], dtype="float128")
         for i, ds_conf in enumerate(config["dataset_list"]):
             counts += get_background_foreground_counts(ds_conf["path"], channel_keyword='/regionLabels', group_keyword=ds_conf.get("keyword", None))
-        weights = compute_category_weights(dict(zip(["bck", "fore"], counts.tolist())), max_weight)
+        weights = compute_category_weights(dict(zip(["bck", "fore"], counts.tolist())), power_law=power_law, max_weight=max_weight)
         return weights.astype("float32")
 
     def get_link_multiplicity_class_weights(config: dict, max_weight= 50):
@@ -196,7 +198,7 @@ if __name__ == "__main__":
                 log = False
             dataset.close()
         print(f"link multiplicity counts: {counts}")
-        return compute_category_weights(counts, max_weight)
+        return compute_category_weights(counts, max_weight=max_weight)
 
 
     def init_model(training:bool):
@@ -218,14 +220,22 @@ if __name__ == "__main__":
         category_class_weights = get_category_class_weights(config, category_number, category_keyword=ARRAY_KEYWORDS[1], max_weight=10) if training and category_number > 1 else None
         if category_class_weights is not None:
             print(f"Category class weights: {category_class_weights}")
-        edm_max_weight = seg_args.get("edm_max_frequency_weight", 0)
-        edm_frequency_weights = get_edm_class_weights(config, edm_max_weight) if training and edm_max_weight>0 else None
+
+        balance_edm_weight = seg_args.get("balance_edm_frequency", False)
+        edm_frequency_weights = get_edm_class_weights(config, power_law = seg_args.get("weight_power_law", 1)) if training and balance_edm_weight else None
         if edm_frequency_weights is not None:
             print(f"edm background/foreground balancing weights {edm_frequency_weights}")
         arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
         def make_model(legacy:bool=False):
-            return get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, tracking=tracking, accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights, edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number, legacy_multi_input_arch = legacy)
+            return get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch,
+                                  next=next, frame_window=frame_window, tracking=tracking,
+                                  accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights,
+                                  edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False),
+                                  cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
+                                  link_multiplicity_class_weights=link_multiplicity_class_weights,
+                                  category_number=category_number, category_class_weights=category_class_weights,
+                                  inference_gap_number=inference_gap_number, legacy_multi_input_arch = legacy)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
@@ -313,6 +323,7 @@ if __name__ == "__main__":
             idx = test_param.get("batch_index", -1)
             if idx < 0 or idx >= len(train_it):
                 idx = random.randint(0, len(train_it)-1)
+            frame_aware = config["model_architecture"].get("frame_aware", False)
             inputs = []
             outputs = []
             if args.test_data_augmentation:
@@ -321,6 +332,8 @@ if __name__ == "__main__":
                 print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
                 for i in range(n_iterations):
                     input, output = train_it[idx]
+                    if frame_aware:
+                        input = input[:-1]
                     #idx_a = np.copy(train_it.index_array)
                     #print(f"index array: {idx_a}")
                     #if isinstance(train_it, ConcatIterator):
@@ -335,6 +348,8 @@ if __name__ == "__main__":
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
                 input, _ = train_it[idx]
                 output = model.predict(input)
+                if frame_aware:
+                    input = input[:-1]
                 inputs.append(input)
                 outputs.append(output)
 
@@ -436,6 +451,9 @@ if __name__ == "__main__":
             callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
             if tensorboard_callback is not None:
                 callbacks.append(tensorboard_callback)
+
+            if config.get("segmentation", {}).get("dynamic_weights", False):
+                callbacks.append(ClassWeightScheduler(attribute_name = "edm_frequency_weights", n_epochs=N_EPOCHS, start_epoch=START_EPOCH))
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
             callbacks.append(log_cb)
             hard_sample_mining_param = t_p.get("hard_sample_mining", None)
