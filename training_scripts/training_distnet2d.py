@@ -4,11 +4,11 @@ import shutil
 import platform
 import random
 import time
-from collections import defaultdict
-import numpy as np
-import tensorflow as tf
 import h5py
 import copy
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import mixed_precision
 from importlib.metadata import version
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
 from dataset_iterator.datasetIO import MemoryIO, get_datasetIO
@@ -48,6 +48,7 @@ parser.add_argument("--learning_rate", type=float, help="initial learning rate f
 parser.add_argument("--min_learning_rate", type=float, help="minimal learning rate for training")
 parser.add_argument("--strategy",default="",type=str,help="distributed training strategy: multiworker-slurm or mirrored. Leave empty for default behaviour (single replica)")
 parser.add_argument("--min_script_version", type=str, help="minimal script version")
+parser.add_argument("--mixed_precision", action="store_true", help="Mixed Precision (float16) training")
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -60,7 +61,9 @@ if __name__ == "__main__":
             print_requirement_error()
             sys.exit(1)
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')} python: {platform.python_version()}")
-
+    if args.mixed_precision:
+        mixed_precision.set_global_policy('mixed_float16')
+        print(f"Mixed precision policy= {mixed_precision.global_policy()}")
     RUN_TEST = args.test_data_augmentation or args.test_predict
     # get parameters
     config = open_config_file(args.config_dir, RUN_TEST)
@@ -93,6 +96,7 @@ if __name__ == "__main__":
         arch_params = config["model_architecture"]
         category_number = arch_params.get("category_number", 0)
         channel_names = ds_conf.get("channel_name", "raw")
+        frame_aware = arch_params.get("frame_aware", arch_params["architecture_type"].lower()=="tema")
         if not isinstance(channel_names, (list, tuple)):
             channel_names = [channel_names]
         elif isinstance(channel_names, tuple):
@@ -155,21 +159,21 @@ if __name__ == "__main__":
         fw = arch_params["frame_window"]
         iterator_params = dict(erase_edge_cell_size=data_aug_params.get("erase_edge_cell_size", 0),
                                aug_remove_prob=data_aug_params.get("static_probability", 0.01),
-                               next_frames=arch_params.get("next", True),
+                               future_frames=arch_params.get("next", True),
                                scale_edm = seg_args.get("scale_edm", False),
                                center_mode=seg_args.get("center_mode", "MEDOID"),
                                center_distance_mode=seg_args.get("center_distance_mode", "GEODESIC"),
                                frame_window=fw,
                                image_data_generators=[data_generators[0], mask_generator] + data_generators[1:],
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
-                               void_mask_proportion = [0, 0] if fw == 0 else None, # exclude empty frame, only when no frame window
+                               void_mask_proportion = [0, 0] if fw == 0 else None,  # exclude empty frame, only when no frame window
                                channels_postprocessing_function=pp_fun, verbose=False and RUN_TEST, memory_persistent=memory_persistent)
         array_kw = (ARRAY_KEYWORDS[:1] if tracking else []) + (ARRAY_KEYWORDS[1:] if category_number>1 else [])
         return DyDxIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
                             input_label_keywords=label_names, array_keywords=array_kw,
                             input_label_center_idx = seg_args.get("input_label_center_idx", -1),
                             tracking = tracking,
-                            frame_aware = arch_params.get("frame_aware", False),
+                            frame_aware = frame_aware,
                             group_keyword=ds_conf.get("keyword", None),
                             batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=seg_args.get("edm_derivatives", True),
                             aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
@@ -203,20 +207,16 @@ if __name__ == "__main__":
 
     def init_model(training:bool):
         arch_args = copy.deepcopy(config["model_architecture"])
-        frame_window = arch_args.pop("frame_window", 3)
-        next = arch_args.pop("next", True)
-        inference_gap_number = arch_args.pop("inference_gap_number", 0)
         seg_args = config.get("segmentation", {})
         tracking = not seg_args.get("segment_only", False)
         shape = config["dataset_parameters"]["input_shape"]
         input_shape = [None if s <= 0 else s for s in shape]
-        arch_args["spatial_dimensions"] = input_shape.copy()
         nchan, nlabel = get_input_channel_and_label(config)
         n_inputs = nchan + nlabel * 2 # for each label EDM and GDCM are added
         link_multiplicity_class_weights = get_link_multiplicity_class_weights(config, max_weight = 50) if training and tracking else None
         if training and tracking:
             print(f"link multiplicity weights: { {l:w for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
-        category_number = arch_args.pop("category_number", 0)
+        category_number = arch_args.get("category_number", 0)
         category_class_weights = get_category_class_weights(config, category_number, category_keyword=ARRAY_KEYWORDS[1], max_weight=10) if training and category_number > 1 else None
         if category_class_weights is not None:
             print(f"Category class weights: {category_class_weights}")
@@ -225,17 +225,17 @@ if __name__ == "__main__":
         edm_frequency_weights = get_edm_class_weights(config, power_law = seg_args.get("weight_power_law", 1)) if training and balance_edm_weight else None
         if edm_frequency_weights is not None:
             print(f"edm background/foreground balancing weights {edm_frequency_weights}")
-        arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
+        arch = get_architecture(arch_args.pop("architecture_type", "blend"),
+                                scale_edm=seg_args.get("scale_edm", False),
+                                spatial_dimensions=input_shape, n_inputs=n_inputs, tracking=tracking, l2_reg=0, **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
         def make_model(legacy:bool=False):
-            return get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch,
-                                  next=next, frame_window=frame_window, tracking=tracking,
-                                  accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights,
-                                  edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False),
+            return get_distnet_2d(arch=arch,
+                                  accum_steps=1, edm_frequency_weights=edm_frequency_weights,
+                                  edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights,
-                                  category_number=category_number, category_class_weights=category_class_weights,
-                                  inference_gap_number=inference_gap_number, legacy_multi_input_arch = legacy)
+                                  category_class_weights=category_class_weights)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
@@ -323,7 +323,7 @@ if __name__ == "__main__":
             idx = test_param.get("batch_index", -1)
             if idx < 0 or idx >= len(train_it):
                 idx = random.randint(0, len(train_it)-1)
-            frame_aware = config["model_architecture"].get("frame_aware", False)
+            frame_aware = config["model_architecture"].get("frame_aware", config["model_architecture"]["architecture_type"].lower()=="tema")
             inputs = []
             outputs = []
             if args.test_data_augmentation:
