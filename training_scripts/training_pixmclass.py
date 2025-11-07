@@ -9,6 +9,8 @@ import numpy as np
 import tensorflow as tf
 import h5py
 from importlib.metadata import version
+
+from dataset_iterator.validation_callback import ValidationCallback
 from dataset_iterator.image_data_generator import get_image_data_generator
 from dataset_iterator.datasetIO import MemoryIO
 from dataset_iterator.nonvoid_iterator import NonVoidIterator
@@ -64,6 +66,7 @@ if __name__ == "__main__":
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
     VAL_STEP_NUMBER = t_p.get("validation_step_number", 100)
+    VAL_FREQ = validation_freq=t_p.get("validation_frequency", 1)
     PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
     MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
@@ -75,7 +78,7 @@ if __name__ == "__main__":
         WORKERS = t_p.get("multiprocessing_workers", 1)
     WORKERS = min(os.cpu_count(), WORKERS)
     SHUFFLE = not args.test_data_augmentation
-    START_EPOCH = t_p.get("epoch_start", 0)
+    START_EPOCH = t_p.get("start_epoch", 0)
 
     print(f"configuration file found. ")
 
@@ -167,7 +170,6 @@ if __name__ == "__main__":
     else:
         print(f"init iterator...", flush=True)
         train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TRAIN")
-        test_it = get_iterator(config, init_iterator, step_number=VAL_STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TEST")
 
         if len(weight_list) > 1:
             # weighted sum of weights
@@ -223,6 +225,8 @@ if __name__ == "__main__":
             if (os.path.exists("/dataTemp")):
                 print(f"dataTemp exists ! {os.listdir('/dataTemp')}", flush=True)
         else:
+            val_it = get_iterator(config, init_iterator, step_number=VAL_STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TEST")
+
             # handling the current strategy
             if args.strategy == "multiworker-slurm":
                 # build multi-worker environment from Slurm variables
@@ -264,17 +268,21 @@ if __name__ == "__main__":
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]), loss=loss)
 
             # perform training
-            checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
-            lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
+            checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
+            lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss')
             ton_cb = tf.keras.callbacks.TerminateOnNaN()
-            log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
+            log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=0)
             callbacks = [checkpoint, lr_schedule, log_cb, ton_cb]
             if EPSILON_RANGE[1]!=EPSILON_RANGE[0]:
                 eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
                 callbacks.append(eps_schedule)
+            if val_it is not None:
+                val_cb = ValidationCallback(val_it, STEP_NUMBER, validation_freq=VAL_FREQ, start_epoch=START_EPOCH)
+                callbacks.append(val_cb)
+            else:
+                val_cb = None
             print("start training...", flush=True)
-            N_EPOCHS -= START_EPOCH
-            if N_EPOCHS > 0:
+            if N_EPOCHS > START_EPOCH:
                 train_it.open()
                 if WORKERS > 1:
                     # check available shm:
@@ -283,29 +291,32 @@ if __name__ == "__main__":
                         print(f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", flush=True)
                     #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
                     enq = OrderedEnqueuerCF(train_it, shuffle=True) #, name="train_gen"
+                    if val_it is not None:
+                        val_enq = OrderedEnqueuerCF(val_it, shuffle=False) #, name="test_gen"
+                        val_cb.set_enqueuer(val_enq, enq)
+                        val_enq.start(workers=WORKERS, max_queue_size=max(3, min(VAL_STEP_NUMBER, WORKERS)))
+                        val_gen = val_enq.get(block=False, name="val")
+                    else:
+                        val_gen = None
                     enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
                     gen = enq.get()
-                    if test_it is not None: # TODO synchronize test gen and train gen
-                        test_enq = OrderedEnqueuerCF(test_it, shuffle=False) #, name="test_gen"
-                        test_enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
-                        test_gen = test_enq.get()
-                    else:
-                        test_gen = None
                 else:
                     gen = train_it
-                    test_gen = test_it
-                model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_gen, callbacks=callbacks, validation_steps=VAL_STEP_NUMBER, validation_freq=t_p.get("validation_frequency", 1))
+                    val_gen = val_it
+                if val_cb is not None:
+                    val_cb.initialize()
+                model.fit(gen, epochs=N_EPOCHS, initial_epoch=START_EPOCH, steps_per_epoch=STEP_NUMBER, validation_data=val_gen, callbacks=callbacks, validation_steps=VAL_STEP_NUMBER, validation_freq=VAL_FREQ)
                 if WORKERS > 1:
                     print("stopping enqueuer", flush=True)
                     enq.stop()
-                    if test_it is not None:
-                        test_enq.stop()
+                    if val_it is not None:
+                        val_enq.stop()
                 print("end of training", flush=True)
             elif START_EPOCH > 0:
                 print("Start Epoch is greater than Epoch number.", flush=True)
             train_it.close()
-            if test_it is not None:
-                test_it.close()
+            if val_it is not None:
+                val_it.close()
             if not args.train_only: # export model
                 print("saving model...", flush=True)
                 if args.strategy == "multiworker-slurm":
