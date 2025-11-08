@@ -239,22 +239,21 @@ if __name__ == "__main__":
         else:
             perform_test_step = False
         def make_model(legacy:bool=False):
-            return get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, tracking=tracking, accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights, edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number, perform_test_step=perform_test_step, legacy_multi_input_arch = legacy)
             return get_distnet_2d(arch=arch,
                                   accum_steps=1, edm_frequency_weights=edm_frequency_weights,
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights,
-                                  category_class_weights=category_class_weights)
+                                  category_class_weights=category_class_weights, perform_test_step=perform_test_step)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             try:
-                model.load_weights(WEIGHT_PATH)
+                model.load_weights(WEIGHT_PATH) # , by_name=True
             except Exception as e: # re-try in legacy mode
                 print(e)
                 model = make_model(True)
-                model.load_weights(WEIGHT_PATH)
+                model.load_weights(WEIGHT_PATH) # , by_name=True
 
             print(f"Weights loaded : {WEIGHT_PATH}", flush=True)
         elif LOAD_WEIGHT_PATH is not None or args.compute_metrics or args.test_predict :
