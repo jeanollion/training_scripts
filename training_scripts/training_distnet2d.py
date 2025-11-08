@@ -10,6 +10,8 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import mixed_precision
 from importlib.metadata import version
+
+from dataset_iterator.validation_callback import ValidationCallback
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
 from dataset_iterator.datasetIO import MemoryIO, get_datasetIO
 from dataset_iterator import extract_tile_random_zoom_function, ConcatIterator
@@ -75,6 +77,8 @@ if __name__ == "__main__":
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
+    VAL_STEP_NUMBER = t_p.get("validation_step_number", 100)
+    VAL_FREQ = t_p.get("validation_frequency", 1)
     PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
     MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
@@ -229,22 +233,27 @@ if __name__ == "__main__":
                                 scale_edm=seg_args.get("scale_edm", False),
                                 spatial_dimensions=input_shape, n_inputs=n_inputs, tracking=tracking, l2_reg=0, **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
+        if training: # perform test step if at least one test dataset
+            ds_types = [ ds_conf.get("type", "TRAIN") for ds_conf in config["dataset_list"] ]
+            perform_test_step = "TEST" in ds_types
+        else:
+            perform_test_step = False
         def make_model(legacy:bool=False):
             return get_distnet_2d(arch=arch,
                                   accum_steps=1, edm_frequency_weights=edm_frequency_weights,
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights,
-                                  category_class_weights=category_class_weights)
+                                  category_class_weights=category_class_weights, perform_test_step=perform_test_step)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             try:
-                model.load_weights(WEIGHT_PATH)
+                model.load_weights(WEIGHT_PATH) # , by_name=True
             except Exception as e: # re-try in legacy mode
                 print(e)
                 model = make_model(True)
-                model.load_weights(WEIGHT_PATH)
+                model.load_weights(WEIGHT_PATH) # , by_name=True
 
             print(f"Weights loaded : {WEIGHT_PATH}", flush=True)
         elif LOAD_WEIGHT_PATH is not None or args.compute_metrics or args.test_predict :
@@ -314,7 +323,6 @@ if __name__ == "__main__":
                 ds_params["data_augmentation"]["frame_subsampling"] = test_param["frame_subsampling"]
         #it_steps = STEP_NUMBER if WORKERS==1 else 0
 
-        test_it = None
         if RUN_TEST:
             train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
             test_param = config.get("test_data_augmentation_parameters", {})
@@ -408,6 +416,7 @@ if __name__ == "__main__":
             np.savetxt(path, metrics, delimiter=";", header=header)
         else: # training
             train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
+            val_it = get_iterator(config, init_iterator, step_number=VAL_STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TEST")
             # Define the training distribution strategy
             if args.strategy == "multiworker-slurm":
                 # build multi-worker environment from Slurm variables
@@ -445,17 +454,19 @@ if __name__ == "__main__":
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
             
             # perform training
-            checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if test_it is not None else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
-            lr_schedule = ReduceLROnPlateau2(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if test_it is not None else 'loss')
+            checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
+            lr_schedule = ReduceLROnPlateau2(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss')
             tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
             callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
             if tensorboard_callback is not None:
                 callbacks.append(tensorboard_callback)
+            log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=0)
 
             if config.get("segmentation", {}).get("dynamic_weights", False):
                 callbacks.append(ClassWeightScheduler(attribute_name = "edm_frequency_weights", n_epochs=N_EPOCHS, start_epoch=START_EPOCH))
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
             callbacks.append(log_cb)
+
             hard_sample_mining_param = t_p.get("hard_sample_mining", None)
             if hard_sample_mining_param is not None:
                 predict_fun = lambda x: model(x, training=False)
@@ -472,33 +483,48 @@ if __name__ == "__main__":
                 arch_params = config["model_architecture"]
                 hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), tracking=tracking), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
                 callbacks.append(hsm_cb)
-
             else:
                 hsm_it = None
                 hsm_cb = None
+            if val_it is not None: # Important: add after HSM cb
+                val_cb = ValidationCallback(val_it, STEP_NUMBER, validation_freq=VAL_FREQ, start_epoch=START_EPOCH)
+                callbacks.append(val_cb)
+            else:
+                val_cb = None
 
-            N_EPOCHS -= START_EPOCH
-            if N_EPOCHS > 0:
+            if N_EPOCHS > START_EPOCH:
                 if WORKERS > 1:
                     # check available shm:
                     shm = get_shm_info()
                     if shm is not None and shm[2] < 1:
                         print( f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
-                    #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
-                    enq = OrderedEnqueuerCF(train_it, shuffle=True)
+                    enq = OrderedEnqueuerCF(train_it, shuffle=True, name="main")
                     if hsm_cb is not None:
                         hsm_cb.set_enqueuer(enq)
-                    enq.start(workers=WORKERS, max_queue_size=max(2, min(STEP_NUMBER, WORKERS)))
-                    gen = enq.get()
 
+                    if val_it is not None:
+                        val_enq = OrderedEnqueuerCF(val_it, shuffle=False, name="val")
+                        val_cb.set_enqueuer(val_enq, enq)
+                        val_enq.start()
+                        val_gen = val_enq.get(block=False, name="val")
+                    else:
+                        val_gen = None
+                    enq.start(workers=WORKERS, max_queue_size=max(1, min(STEP_NUMBER - 1,  WORKERS)))  # queue should be lower than step number otherwise there can be stalling when several enqueueurs are running
+                    gen = enq.get()
                 else:
                     gen = train_it
+                    val_gen = val_it
                 if hsm_cb is not None:
                     hsm_cb.initialize()
-                model.fit(gen, epochs=N_EPOCHS, steps_per_epoch=STEP_NUMBER, validation_data=test_it, callbacks=callbacks, workers=1, use_multiprocessing=False)
+                if val_cb is not None:
+                    val_cb.initialize()
+
+                model.fit(gen, epochs=N_EPOCHS, initial_epoch=START_EPOCH, steps_per_epoch=STEP_NUMBER, validation_data=val_gen, callbacks=callbacks, workers=1, use_multiprocessing=False, validation_steps = VAL_STEP_NUMBER, validation_freq=VAL_FREQ)
                 if WORKERS > 1:
                     print("stopping enqueuer...", flush=True)
                     enq.stop()
+                    if val_it is not None:
+                        val_enq.stop()
                 print("end of training", flush=True)
             elif START_EPOCH > 0:
                 print("Start Epoch is greater than Epoch number.", flush=True)
