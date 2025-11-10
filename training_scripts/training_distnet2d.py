@@ -191,7 +191,7 @@ if __name__ == "__main__":
         weights = compute_category_weights(dict(zip(["bck", "fore"], counts.tolist())), power_law=power_law, max_weight=max_weight)
         return weights.astype("float32")
 
-    def get_link_multiplicity_class_weights(config: dict, max_weight= 50):
+    def get_link_multiplicity_class_weights(config: dict, max_weight= 50, power_law:float=1):
         counts = {i: 0 for i in range(0, 3)}
         log = True
         for i, ds_conf in enumerate(config["dataset_list"]):
@@ -206,7 +206,7 @@ if __name__ == "__main__":
                 log = False
             dataset.close()
         print(f"link multiplicity counts: {counts}")
-        return compute_category_weights(counts, max_weight=max_weight)
+        return compute_category_weights(counts, max_weight=max_weight, power_law = power_law)
 
 
     def init_model(training:bool):
@@ -217,18 +217,22 @@ if __name__ == "__main__":
         input_shape = [None if s <= 0 else s for s in shape]
         nchan, nlabel = get_input_channel_and_label(config)
         n_inputs = nchan + nlabel * 2 # for each label EDM and GDCM are added
-        link_multiplicity_class_weights = get_link_multiplicity_class_weights(config, max_weight = 50) if training and tracking else None
-        if training and tracking:
+        tracking_args = config.get("tracking", {})
+        if training and tracking and tracking_args.get("balance_lm_frequency", True):
+            link_multiplicity_class_weights = get_link_multiplicity_class_weights(config,  max_weight=50, power_law = tracking_args.get("balance_lm_frequency_parameters", {}).get("weight_power_law", 1))
             print(f"link multiplicity weights: { {l:w for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
+        else:
+            link_multiplicity_class_weights = [1, 1, 1]
         category_number = arch_args.get("category_number", 0)
-        category_class_weights = get_category_class_weights(config, category_number, category_keyword=ARRAY_KEYWORDS[1], max_weight=10) if training and category_number > 1 else None
-        if category_class_weights is not None:
+        if training and category_number > 1 and seg_args.get("balance_category_frequency", True):
+            category_class_weights = get_category_class_weights(config, category_number,  category_keyword=ARRAY_KEYWORDS[1], power_law = seg_args.get("balance_category_frequency_parameters", {}).get("weight_power_law", 1))
             print(f"Category class weights: {category_class_weights}")
-
-        balance_edm_weight = seg_args.get("balance_edm_frequency", False)
-        edm_frequency_weights = get_edm_class_weights(config, power_law = seg_args.get("weight_power_law", 1)) if training and balance_edm_weight else None
-        if edm_frequency_weights is not None:
-            print(f"edm background/foreground balancing weights {edm_frequency_weights}")
+        else:
+            category_class_weights = [1] * category_number
+        balance_edm_weight = "balance_edm_frequency_parameters" in seg_args
+        edm_class_weights = get_edm_class_weights(config, power_law = seg_args["balance_edm_frequency_parameters"].get("weight_power_law", 1)) if training and balance_edm_weight else None
+        if edm_class_weights is not None:
+            print(f"edm background/foreground balancing weights {edm_class_weights}")
         arch = get_architecture(arch_args.pop("architecture_type", "blend"),
                                 scale_edm=seg_args.get("scale_edm", False),
                                 spatial_dimensions=input_shape, n_inputs=n_inputs, tracking=tracking, l2_reg=0, **arch_args)
@@ -240,7 +244,7 @@ if __name__ == "__main__":
             perform_test_step = False
         def make_model(legacy:bool=False):
             return get_distnet_2d(arch=arch,
-                                  accum_steps=1, edm_frequency_weights=edm_frequency_weights,
+                                  accum_steps=1, edm_class_weights=edm_class_weights,
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights,
@@ -462,8 +466,20 @@ if __name__ == "__main__":
                 callbacks.append(tensorboard_callback)
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=0)
 
-            if config.get("segmentation", {}).get("dynamic_weights", False):
-                callbacks.append(ClassWeightScheduler(attribute_name = "edm_frequency_weights", n_epochs=N_EPOCHS, start_epoch=START_EPOCH))
+            if "balance_edm_frequency_parameters" in config.get("segmentation", {}):
+                freq_param = config["segmentation"]["balance_edm_frequency_parameters"]
+                if freq_param.get["dynamic_weights"]:
+                    callbacks.append(ClassWeightScheduler(attribute_name = "edm_class_weights", n_epochs=N_EPOCHS, power_law = freq_param.get("dynamic_power_law", 1)))
+            category_number = config["model_architecture"].get("category_number", 0)
+            if category_number > 1 and "balance_category_frequency_parameters" in config.get("segmentation", {}):
+                freq_param = config["segmentation"]["balance_category_frequency_parameters"]
+                if freq_param.get["dynamic_weights"]:
+                    callbacks.append(ClassWeightScheduler(attribute_name="category_class_weights", n_epochs=N_EPOCHS, power_law=freq_param.get("dynamic_power_law", 1)))
+            if "balance_lm_frequency_parameters" in config.get("tracking", {}):
+                freq_param = config["tracking"]["balance_lm_frequency_parameters"]
+                if freq_param.get["dynamic_weights"]:
+                    callbacks.append(ClassWeightScheduler(attribute_name="link_multiplicity_class_weights", n_epochs=N_EPOCHS, power_law = freq_param.get("dynamic_power_law", 1)))
+
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
             callbacks.append(log_cb)
 

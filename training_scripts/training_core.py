@@ -263,7 +263,7 @@ def get_input_channel_and_label(config, return_names:bool = False):
     else:
         return nchan[0], nlabel[0]
 
-def get_category_class_weights(config:dict, category_number:int, category_keyword:str= "/category", max_weight=10):
+def get_category_class_weights(config:dict, category_number:int, category_keyword:str= "/category", max_weight=None, power_law:float=1):
     counts = {i:0 for i in range(0, category_number)}
     for i, ds_conf in enumerate(config["dataset_list"]):
         dataset = get_datasetIO(ds_conf["path"], 'r')
@@ -278,7 +278,7 @@ def get_category_class_weights(config:dict, category_number:int, category_keywor
                 else:
                     raise ValueError(f"Category {category} is present in dataset: {p} whereas #{category_number} categories are expected")
         dataset.close()
-    return compute_category_weights(counts, max_weight=max_weight)
+    return compute_category_weights(counts, max_weight=max_weight, power_law=power_law)
 
 def compute_category_weights(counts:dict, power_law:float=1, max_weight = None):
     # compute weights
