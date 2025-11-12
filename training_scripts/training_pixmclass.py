@@ -23,8 +23,8 @@ import pix_mclass.training as pmt
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info, check_requirements, \
     compare_versions, print_requirement_error
 
-__VERSION__ = "1.1.3"
-__REQUIRES__ = ["dataset_iterator>=0.5.6", "PixMClass>=0.1.5" ]
+__VERSION__ = "1.1.7"
+__REQUIRES__ = ["dataset_iterator>=0.5.7", "PixMClass>=0.1.5" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -289,16 +289,15 @@ if __name__ == "__main__":
                     shm = get_shm_info(verbose=2)
                     if shm is not None and shm[2] < 1:
                         print(f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", flush=True)
-                    #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
                     enq = OrderedEnqueuerCF(train_it, shuffle=True) #, name="train_gen"
                     if val_it is not None:
                         val_enq = OrderedEnqueuerCF(val_it, shuffle=False) #, name="test_gen"
                         val_cb.set_enqueuer(val_enq, enq)
-                        val_enq.start(workers=WORKERS, max_queue_size=max(3, min(VAL_STEP_NUMBER, WORKERS)))
+                        val_enq.start(workers=WORKERS, max_queue_size=max(3, min(VAL_STEP_NUMBER - 1, WORKERS)))
                         val_gen = val_enq.get(block=False, name="val")
                     else:
                         val_gen = None
-                    enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
+                    enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER - 1, WORKERS)))
                     gen = enq.get()
                 else:
                     gen = train_it
