@@ -468,16 +468,16 @@ if __name__ == "__main__":
 
             if "balance_edm_frequency_parameters" in config.get("segmentation", {}):
                 freq_param = config["segmentation"]["balance_edm_frequency_parameters"]
-                if freq_param.get["dynamic_weights"]:
+                if freq_param.get("dynamic_weights", True):
                     callbacks.append(ClassWeightScheduler(attribute_name = "edm_class_weights", n_epochs=N_EPOCHS, power_law = freq_param.get("dynamic_power_law", 1)))
             category_number = config["model_architecture"].get("category_number", 0)
             if category_number > 1 and "balance_category_frequency_parameters" in config.get("segmentation", {}):
                 freq_param = config["segmentation"]["balance_category_frequency_parameters"]
-                if freq_param.get["dynamic_weights"]:
+                if freq_param.get("dynamic_weights", True):
                     callbacks.append(ClassWeightScheduler(attribute_name="category_class_weights", n_epochs=N_EPOCHS, power_law=freq_param.get("dynamic_power_law", 1)))
             if "balance_lm_frequency_parameters" in config.get("tracking", {}):
                 freq_param = config["tracking"]["balance_lm_frequency_parameters"]
-                if freq_param.get["dynamic_weights"]:
+                if freq_param.get("dynamic_weights", True):
                     callbacks.append(ClassWeightScheduler(attribute_name="link_multiplicity_class_weights", n_epochs=N_EPOCHS, power_law = freq_param.get("dynamic_power_law", 1)))
 
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
