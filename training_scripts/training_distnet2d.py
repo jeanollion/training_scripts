@@ -486,7 +486,7 @@ if __name__ == "__main__":
                     if val_it is not None:
                         val_enq = OrderedEnqueuerCF(val_it, shuffle=False, name="val")
                         val_cb.set_enqueuer(val_enq, enq)
-                        val_enq.start()
+                        val_enq.start(workers=WORKERS, max_queue_size=max(3, min(VAL_STEP_NUMBER - 1, WORKERS)))
                         val_gen = val_enq.get(block=False, name="val")
                     else:
                         val_gen = None
