@@ -31,7 +31,7 @@ from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_i
     print_requirement_error, compare_versions
 
 __VERSION__ = '1.1.5'
-__REQUIRES__ = ["dataset_iterator>=0.5.6", "distnet2d>=0.2.3" ]
+__REQUIRES__ = ["dataset_iterator>=0.5.7", "distnet2d>=0.2.4" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
