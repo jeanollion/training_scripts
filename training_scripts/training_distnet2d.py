@@ -30,7 +30,7 @@ from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_i
     get_shm_info, get_input_channel_and_label, get_category_class_weights, compute_category_weights, check_requirements, \
     print_requirement_error, compare_versions
 
-__VERSION__ = '1.1.5'
+__VERSION__ = '1.1.6'
 __REQUIRES__ = ["dataset_iterator>=0.5.7", "distnet2d>=0.2.4" ]
 
 parser = argparse.ArgumentParser()
