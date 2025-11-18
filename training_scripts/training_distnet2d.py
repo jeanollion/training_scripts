@@ -1,4 +1,5 @@
 import argparse
+import math
 import os, sys
 import shutil
 import platform
@@ -18,13 +19,13 @@ from dataset_iterator import extract_tile_random_zoom_function, ConcatIterator
 from dataset_iterator.utils import transpose_list
 from dataset_iterator.hard_sample_mining import HardSampleMiningCallback, compute_metrics
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
-from dataset_iterator.keras_callbacks import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2
+from dataset_iterator.keras_callbacks import StopOnLR, EMALossNormalizationCallback, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2
 from distnet_2d.data import DyDxIterator
 from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
-from distnet_2d.utils.callbacks import ClassWeightScheduler
+from distnet_2d.utils.callbacks import ClassWeightScheduler, GradientMonitorCallback
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
@@ -458,12 +459,14 @@ if __name__ == "__main__":
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
             
             # perform training
+            lossNorm = EMALossNormalizationCallback(alpha = math.exp(-math.log(2)/PATIENCE), step_number=STEP_NUMBER, val_step_number=VAL_STEP_NUMBER) # EMA smoothing: half-life ~ scheduler patience.
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
-            lr_schedule = ReduceLROnPlateau2(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss')
+            lr_schedule = ReduceLROnPlateau2(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=1e-3, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss')
             tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
-            callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
+            callbacks = [lossNorm, lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
             if tensorboard_callback is not None:
                 callbacks.append(tensorboard_callback)
+            #callbacks.append(GradientMonitorCallback(STEP_NUMBER))
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=0)
 
             if "balance_edm_frequency_parameters" in config.get("segmentation", {}):
@@ -514,14 +517,14 @@ if __name__ == "__main__":
                     shm = get_shm_info()
                     if shm is not None and shm[2] < 1:
                         print( f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
-                    enq = OrderedEnqueuerCF(train_it, shuffle=True, name="main")
+                    enq = OrderedEnqueuerCF(train_it, shuffle=True, name="main", use_shm=False, use_shared_array=True)
                     if hsm_cb is not None:
                         hsm_cb.set_enqueuer(enq)
 
                     if val_it is not None:
-                        val_enq = OrderedEnqueuerCF(val_it, shuffle=False, name="val")
+                        val_enq = OrderedEnqueuerCF(val_it, shuffle=False, name="val", use_shm=False, use_shared_array=False)
                         val_cb.set_enqueuer(val_enq, enq)
-                        val_enq.start()
+                        val_enq.start(workers=WORKERS, max_queue_size=max(1, min(VAL_STEP_NUMBER - 1,  WORKERS)))
                         val_gen = val_enq.get(block=False, name="val")
                     else:
                         val_gen = None
