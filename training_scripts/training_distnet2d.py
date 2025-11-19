@@ -19,7 +19,7 @@ from dataset_iterator import extract_tile_random_zoom_function, ConcatIterator
 from dataset_iterator.utils import transpose_list
 from dataset_iterator.hard_sample_mining import HardSampleMiningCallback, compute_metrics
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
-from dataset_iterator.keras_callbacks import StopOnLR, EMALossNormalizationCallback, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2
+from dataset_iterator.keras_callbacks import StopOnLR, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2
 from distnet_2d.data import DyDxIterator
 from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
 from distnet_2d.data.swim1d import get_swim1d_function
@@ -243,13 +243,15 @@ if __name__ == "__main__":
             perform_test_step = "TEST" in ds_types
         else:
             perform_test_step = False
+
+        ema_kwargs = {"alpha": math.exp(-math.log(2) / PATIENCE), "step_number":STEP_NUMBER} # EMA smoothing: half-life ~ scheduler patience.
         def make_model(legacy:bool=False):
             return get_distnet_2d(arch=arch,
                                   accum_steps=1, edm_class_weights=edm_class_weights,
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights,
-                                  category_class_weights=category_class_weights, perform_test_step=perform_test_step)
+                                  category_class_weights=category_class_weights, perform_test_step=perform_test_step, ema_kwargs=ema_kwargs)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
@@ -459,11 +461,10 @@ if __name__ == "__main__":
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
             
             # perform training
-            lossNorm = EMALossNormalizationCallback(alpha = math.exp(-math.log(2)/PATIENCE), step_number=STEP_NUMBER, val_step_number=VAL_STEP_NUMBER) # EMA smoothing: half-life ~ scheduler patience.
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
             lr_schedule = ReduceLROnPlateau2(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=1e-3, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss')
             tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
-            callbacks = [lossNorm, lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
+            callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
             if tensorboard_callback is not None:
                 callbacks.append(tensorboard_callback)
             #callbacks.append(GradientMonitorCallback(STEP_NUMBER))
