@@ -244,7 +244,7 @@ if __name__ == "__main__":
         else:
             perform_test_step = False
 
-        ema_kwargs = {"alpha": math.exp(-math.log(2) / PATIENCE), "step_number":STEP_NUMBER} # EMA smoothing: half-life ~ scheduler patience.
+        ema_kwargs = {"alpha": math.exp(-math.log(2) / PATIENCE), "step_number":STEP_NUMBER} if training else None # EMA smoothing: half-life ~ scheduler patience. if not training: none to avoid dep on EMA custom metric at inference time
         def make_model(legacy:bool=False):
             return get_distnet_2d(arch=arch,
                                   accum_steps=1, edm_class_weights=edm_class_weights,
