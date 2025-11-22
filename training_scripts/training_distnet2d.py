@@ -469,6 +469,7 @@ if __name__ == "__main__":
                 callbacks.append(tensorboard_callback)
             #callbacks.append(GradientMonitorCallback(STEP_NUMBER))
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=0)
+            callbacks.append(log_cb)
 
             if "balance_edm_frequency_parameters" in config.get("segmentation", {}):
                 freq_param = config["segmentation"]["balance_edm_frequency_parameters"]
@@ -483,9 +484,6 @@ if __name__ == "__main__":
                 freq_param = config["tracking"]["balance_lm_frequency_parameters"]
                 if freq_param.get("dynamic_weights", True):
                     callbacks.append(ClassWeightScheduler(attribute_name="link_multiplicity_class_weights", n_epochs=N_EPOCHS, power_law = freq_param.get("dynamic_power_law", 1)))
-
-            log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=START_EPOCH)
-            callbacks.append(log_cb)
 
             hard_sample_mining_param = t_p.get("hard_sample_mining", None)
             if hard_sample_mining_param is not None:
