@@ -1,5 +1,5 @@
 FROM jeanollion/training_dnn:tf-2.14.0
-RUN pip install SharedArray
+RUN pip install --upgrade SharedArray==3.2.4
 RUN pip install dill
 RUN pip install --upgrade h5py==3.11.0
 COPY dataset_iterator /dataset_iterator
