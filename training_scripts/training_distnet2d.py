@@ -244,14 +244,15 @@ if __name__ == "__main__":
         else:
             perform_test_step = False
 
-        ema_kwargs = {"alpha": math.exp(-math.log(2) / PATIENCE), "step_number":STEP_NUMBER} if training else None # EMA smoothing: half-life ~ scheduler patience. if not training: none to avoid dep on EMA custom metric at inference time
+        ema_alpha = math.exp(-math.log(2) / float(PATIENCE)) # EMA smoothing: half-life ~ scheduler patience.
+        ema_alpha = 1 - (1 - ema_alpha) / float(STEP_NUMBER) # EMA step-wise alpha
         def make_model(legacy:bool=False):
             return get_distnet_2d(arch=arch,
                                   accum_steps=1, edm_class_weights=edm_class_weights,
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights,
-                                  category_class_weights=category_class_weights, perform_test_step=perform_test_step, ema_kwargs=ema_kwargs)
+                                  category_class_weights=category_class_weights, perform_test_step=perform_test_step, ema_alpha=None if legacy else ema_alpha)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
@@ -281,6 +282,7 @@ if __name__ == "__main__":
                     model = make_model(True)
                     model.load_weights(LOAD_WEIGHT_PATH)
             print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
+        print(f"model ema: {model.ema_losses}")
         return model
 
 
