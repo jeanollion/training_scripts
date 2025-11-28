@@ -83,8 +83,7 @@ if __name__ == "__main__":
     PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
     MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
-    EPSILON = 1e-7
-
+    EPSILON = 1e-5 # trade-off: higher learn slower but stabilise. default is 1e-7, 1e-5 stabilise especially with FP16
     if args.strategy == "multiworker-slurm":
         WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
     else:
@@ -362,7 +361,7 @@ if __name__ == "__main__":
                     print(f"{i + 1}/{n_iterations}", flush=True)
             else: # test predict
                 model = init_model(False)
-                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
+                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON)) # test : , clipnorm=1.0
                 input, _ = train_it[idx]
                 output = model.predict(input)
                 if frame_aware:
