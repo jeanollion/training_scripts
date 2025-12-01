@@ -30,7 +30,7 @@ from distnet_2d.utils.helpers import get_background_foreground_counts, count_lin
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
     get_shm_info, get_input_channel_and_label, get_category_class_weights, compute_category_weights, check_requirements, \
-    print_requirement_error, compare_versions
+    print_requirement_error, compare_versions, reinitialize_weights
 
 __VERSION__ = '1.1.5'
 __REQUIRES__ = ["dataset_iterator>=0.5.6", "distnet2d>=0.2.3" ]
@@ -80,10 +80,11 @@ if __name__ == "__main__":
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
     VAL_STEP_NUMBER = t_p.get("validation_step_number", 100)
     VAL_FREQ = t_p.get("validation_frequency", 1)
-    PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
+    PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 80)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
     MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
-    EPSILON = 1e-5 # trade-off: higher learn slower but stabilise. default is 1e-7, 1e-5 stabilise especially with FP16
+    EPSILON = 1e-6 # trade-off: higher -> learns slower but stabilises (especially with FP16). keras default is 1e-7
+    MIN_EPSILON = 1e-7
     if args.strategy == "multiworker-slurm":
         WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
     else:
@@ -243,15 +244,13 @@ if __name__ == "__main__":
         else:
             perform_test_step = False
 
-        ema_alpha = math.exp(-math.log(2) / float(PATIENCE)) # EMA smoothing: half-life ~ scheduler patience.
-        ema_alpha = 1 - (1 - ema_alpha) / float(STEP_NUMBER) # EMA step-wise alpha
         def make_model(legacy:bool=False):
             return get_distnet_2d(arch=arch,
                                   accum_steps=1, edm_class_weights=edm_class_weights,
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights,
-                                  category_class_weights=category_class_weights, perform_test_step=perform_test_step, ema_alpha=None if legacy else ema_alpha)
+                                  category_class_weights=category_class_weights, perform_test_step=perform_test_step, scale_losses = not legacy)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
@@ -281,7 +280,7 @@ if __name__ == "__main__":
                     model = make_model(True)
                     model.load_weights(LOAD_WEIGHT_PATH)
             print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
-        print(f"model ema: {model.ema_losses}")
+            print(f"model loss scales: {model.loss_scales}")
         return model
 
 
@@ -315,6 +314,37 @@ if __name__ == "__main__":
                 return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1], y_pred[2][..., fw*category_number:(fw+1)*category_number] if category_number>1 else None,
                                     y_true[0], y_true[2] if category_number>1 else None, y_true[-2], y_true[-1])
         return fun
+
+
+    def init_loss_scales(model, train_it, steps:int=30):
+        steps = min(len(train_it), steps)
+        print("initializing loss scales...", flush=True)
+        losses_names = model.get_sub_losses_names()
+        acc_losses = {k: [] for k in losses_names}
+
+        @tf.function
+        def run_batch(model, data):
+            return model.test_step(data)
+
+        enq = OrderedEnqueuerCF(train_it, shuffle=True, name="init_test", use_shm=False, use_shared_array=True, max_steps=steps)
+        enq.start(workers=WORKERS, max_queue_size=max(1, min(STEP_NUMBER - 1,  WORKERS)))
+        gen = enq.get()
+        enq.start()
+        for i in range(steps):
+            data = next(gen)
+            print(f"{i+1}/{steps}", flush=True)
+            losses = run_batch(model, data)
+            if i%3==0:
+                reinitialize_weights(model)
+            for k in losses_names:
+                acc_losses[k].append(losses[k])
+        enq.stop()
+        del enq
+        mean_losses = [np.mean(acc_losses[k]) for k in losses_names]
+        print(f"loss scales init values: {mean_losses}", flush=True)
+        std_losses = [np.std(acc_losses[k]) for k in losses_names]
+        print(f"loss scales SEM values: {[std/(mean * np.sqrt(steps)) for std, mean in zip(std_losses, mean_losses)]}", flush=True)
+        model.loss_scales.assign(mean_losses)
 
 
     if args.export_only:
@@ -460,10 +490,13 @@ if __name__ == "__main__":
             with strategy.scope():
                 model = init_model(training=True)
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
-            
+
+            if LOAD_WEIGHT_PATH is None:
+                init_loss_scales(model, train_it)
+
             # perform training
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
-            lr_schedule = ReduceLROnPlateau2(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=1e-3, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss')
+            lr_schedule = ReduceLROnPlateau2(min_epsilon=None if MIN_EPSILON==EPSILON else MIN_EPSILON, min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=1e-3, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss')
             tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
             callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
             if tensorboard_callback is not None:

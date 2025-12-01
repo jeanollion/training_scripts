@@ -10,6 +10,8 @@ from dataset_iterator.utils import transpose_list, is_null, ensure_multiplicity,
 from dataset_iterator.helpers import get_optimal_tiling, get_image_shape
 from dataset_iterator.datasetIO import get_datasetIO, MemoryIO
 import numpy as np
+import tensorflow as tf
+import inspect
 
 
 def merge_dicts(primary_dict, secondary_dict):
@@ -310,6 +312,44 @@ def check_requirements(requires:list):
             print_requirement_error()
             return False
     return True
+
+
+def reinitialize_weights(model, seed=42):
+    for l in model.layers:
+        if isinstance(l, tf.keras.Model):
+            reinitialize_weights(l, seed)
+        else:
+            reinitialize_layer_weights(l, seed)
+
+def reinitialize_layer_weights(l, seed):
+    def _reinitialize_weight(initializer_name, weight_name):
+        if hasattr(l, initializer_name) and hasattr(l, weight_name):
+            weight = getattr(l, weight_name)
+            if weight is not None:
+                initializer = getattr(l, initializer_name)
+                if isinstance(initializer, tf.keras.initializers.Initializer):
+                    initializer_class = initializer.__class__
+                    config = initializer.get_config()
+                    sig = inspect.signature(initializer_class.__init__)
+                    if 'seed' in sig.parameters:
+                        config_with_seed = config.copy()
+                        config_with_seed['seed'] = seed
+                        new_initializer = initializer_class.from_config(config_with_seed)
+                    else:
+                        new_initializer = initializer
+                    weight.assign(new_initializer(tf.shape(weight)))
+                else:
+                    weight.assign(initializer(tf.shape(weight)))
+
+    _reinitialize_weight("kernel_initializer", "kernel")
+    _reinitialize_weight("bias_initializer", "bias")
+    _reinitialize_weight("recurrent_initializer", "recurrent_kernel")
+    _reinitialize_weight("embeddings_initializer", "embeddings")
+
+    for attribute, value in vars(l).items():
+        if not attribute.startswith("_") and isinstance(value, tf.keras.layers.Layer):
+            reinitialize_layer_weights(value, seed)
+
 
 def compare_versions(v1, v2):
     # Split version strings into lists of integers
