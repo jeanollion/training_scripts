@@ -321,29 +321,31 @@ if __name__ == "__main__":
         print("initializing loss scales...", flush=True)
         losses_names = model.get_sub_losses_names()
         acc_losses = {k: [] for k in losses_names}
+        if steps>0:
+            @tf.function
+            def run_batch(model, data):
+                return model.test_step(data)
 
-        @tf.function
-        def run_batch(model, data):
-            return model.test_step(data)
-
-        enq = OrderedEnqueuerCF(train_it, shuffle=True, name="init_test", use_shm=False, use_shared_array=True, max_steps=steps)
-        enq.start(workers=WORKERS, max_queue_size=max(1, min(STEP_NUMBER - 1,  WORKERS)))
-        gen = enq.get()
-        enq.start()
-        for i in range(steps):
-            data = next(gen)
-            print(f"{i+1}/{steps}", flush=True)
-            losses = run_batch(model, data)
-            if i%3==0:
-                reinitialize_weights(model)
-            for k in losses_names:
-                acc_losses[k].append(losses[k])
-        enq.stop()
-        del enq
-        mean_losses = [np.mean(acc_losses[k]) for k in losses_names]
-        print(f"loss scales init values: {mean_losses}", flush=True)
-        std_losses = [np.std(acc_losses[k]) for k in losses_names]
-        print(f"loss scales SEM values: {[std/(mean * np.sqrt(steps)) for std, mean in zip(std_losses, mean_losses)]}", flush=True)
+            enq = OrderedEnqueuerCF(train_it, shuffle=True, name="init_test", use_shm=False, use_shared_array=True, max_steps=steps)
+            enq.start(workers=WORKERS, max_queue_size=max(1, min(STEP_NUMBER - 1,  WORKERS)))
+            gen = enq.get()
+            enq.start()
+            for i in range(steps):
+                data = next(gen)
+                print(f"{i+1}/{steps}", flush=True)
+                losses = run_batch(model, data)
+                if i%3==0:
+                    reinitialize_weights(model)
+                for k in losses_names:
+                    acc_losses[k].append(losses[k])
+            enq.stop()
+            del enq
+            mean_losses = [np.mean(acc_losses[k]) for k in losses_names]
+            print(f"loss scales init values: {mean_losses}", flush=True)
+            std_losses = [np.std(acc_losses[k]) for k in losses_names]
+            print(f"loss scales SEM values: {[std/(mean * np.sqrt(steps)) for std, mean in zip(std_losses, mean_losses)]}", flush=True)
+        else:
+            mean_losses = [1] * len(losses_names)
         model.loss_scales.assign(mean_losses)
 
 
@@ -492,7 +494,7 @@ if __name__ == "__main__":
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
 
             if LOAD_WEIGHT_PATH is None:
-                init_loss_scales(model, train_it)
+                init_loss_scales(model, train_it, steps=30)
 
             # perform training
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
