@@ -543,7 +543,7 @@ if __name__ == "__main__":
                 seg_args = config.get("segmentation", {})
                 tracking = not seg_args.get("segment_only", False)
                 arch_params = config["model_architecture"]
-                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), tracking=tracking), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
+                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), tracking=tracking), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
                 callbacks.append(hsm_cb)
             else:
                 hsm_it = None
