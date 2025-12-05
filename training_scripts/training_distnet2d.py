@@ -12,6 +12,8 @@ import tensorflow as tf
 from tensorflow.keras import mixed_precision
 from importlib.metadata import version
 
+from tensorflow.keras.optimizers.schedules import CosineDecay
+
 from dataset_iterator.validation_callback import ValidationCallback
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
 from dataset_iterator.datasetIO import MemoryIO, get_datasetIO
@@ -19,13 +21,14 @@ from dataset_iterator import extract_tile_random_zoom_function, ConcatIterator
 from dataset_iterator.utils import transpose_list
 from dataset_iterator.hard_sample_mining import HardSampleMiningCallback, compute_metrics
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
-from dataset_iterator.keras_callbacks import StopOnLR, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2
+from dataset_iterator.keras_callbacks import StopOnLR, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2, \
+    LogLRCallback
 from distnet_2d.data import DyDxIterator
 from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
-from distnet_2d.utils.callbacks import ClassWeightScheduler, GradientMonitorCallback
+from distnet_2d.utils.callbacks import ClassWeightScheduler, GradientMonitorCallback, EpsilonCosineDecayCallback
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
@@ -83,7 +86,7 @@ if __name__ == "__main__":
     PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 80)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
     MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
-    EPSILON = 1e-6 # trade-off: higher -> learns slower but stabilises (especially with FP16). keras default is 1e-7
+    EPSILON = 1e-7 # trade-off: higher -> learns slower but stabilises (especially with FP16). keras default is 1e-7
     MIN_EPSILON = 1e-7
     if args.strategy == "multiworker-slurm":
         WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
@@ -342,8 +345,6 @@ if __name__ == "__main__":
             del enq
             mean_losses = [np.mean(acc_losses[k]) for k in losses_names]
             print(f"loss scales init values: {mean_losses}", flush=True)
-            std_losses = [np.std(acc_losses[k]) for k in losses_names]
-            print(f"loss scales SEM values: {[std/(mean * np.sqrt(steps)) for std, mean in zip(std_losses, mean_losses)]}", flush=True)
         else:
             mean_losses = [1] * len(losses_names)
         model.loss_scales.assign(mean_losses)
@@ -491,16 +492,23 @@ if __name__ == "__main__":
 
             with strategy.scope():
                 model = init_model(training=True)
-                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
+                learning_rate = CosineDecay(initial_learning_rate=LR / 10,
+                                            decay_steps=STEP_NUMBER * N_EPOCHS,
+                                            alpha=float(MIN_LR) / float(LR),
+                                            warmup_target=LR,
+                                            warmup_steps = STEP_NUMBER * 10) # TODO: how does this interact with start_epoch > 0 ? use class in BLISSED if necessary.
+                model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate, epsilon=EPSILON))
 
-            if LOAD_WEIGHT_PATH is None:
-                init_loss_scales(model, train_it, steps=30)
+                if LOAD_WEIGHT_PATH is None:
+                    init_loss_scales(model, train_it, steps=30)
 
             # perform training
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
-            lr_schedule = ReduceLROnPlateau2(min_epsilon=None if MIN_EPSILON==EPSILON else MIN_EPSILON, min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=1e-3, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss')
             tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
-            callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
+            callbacks = [LogLRCallback(), checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
+            if MIN_EPSILON<EPSILON:
+                eps_cb = EpsilonCosineDecayCallback(start_epsilon=EPSILON, min_epsilon=MIN_EPSILON, decay_steps=STEP_NUMBER * N_EPOCHS)
+                callbacks.append(eps_cb)
             if tensorboard_callback is not None:
                 callbacks.append(tensorboard_callback)
             #callbacks.append(GradientMonitorCallback(STEP_NUMBER))
