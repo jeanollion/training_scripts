@@ -80,6 +80,7 @@ if __name__ == "__main__":
     LOG_PATH = os.path.join(args.config_dir, model_name )
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
+    WARMUP_EPOCHS = 20
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
     VAL_STEP_NUMBER = t_p.get("validation_step_number", 100)
     VAL_FREQ = t_p.get("validation_frequency", 1)
@@ -496,7 +497,7 @@ if __name__ == "__main__":
                                             decay_steps=STEP_NUMBER * N_EPOCHS,
                                             alpha=float(MIN_LR) / float(LR),
                                             warmup_target=LR,
-                                            warmup_steps = STEP_NUMBER * 10) # TODO: how does this interact with start_epoch > 0 ? use class in BLISSED if necessary.
+                                            warmup_steps = STEP_NUMBER * WARMUP_EPOCHS) # TODO: how does this interact with start_epoch > 0 ? use class in BLISSED if necessary.
                 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate, epsilon=EPSILON))
 
                 if LOAD_WEIGHT_PATH is None:
@@ -507,7 +508,7 @@ if __name__ == "__main__":
             tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
             callbacks = [LogLRCallback(), checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
             if MIN_EPSILON<EPSILON:
-                eps_cb = EpsilonCosineDecayCallback(start_epsilon=EPSILON, min_epsilon=MIN_EPSILON, decay_steps=STEP_NUMBER * N_EPOCHS)
+                eps_cb = EpsilonCosineDecayCallback(start_epsilon=EPSILON, min_epsilon=MIN_EPSILON, decay_steps=STEP_NUMBER * WARMUP_EPOCHS)
                 callbacks.append(eps_cb)
             if tensorboard_callback is not None:
                 callbacks.append(tensorboard_callback)
