@@ -373,7 +373,8 @@ if __name__ == "__main__":
             idx = test_param.get("batch_index", -1)
             if idx < 0 or idx >= len(train_it):
                 idx = random.randint(0, len(train_it)-1)
-            frame_aware = config["model_architecture"].get("frame_aware", config["model_architecture"]["architecture_type"].lower()=="tema")
+            default_frame_aware  = config["model_architecture"]["architecture_type"].lower()=="tema" or config["model_architecture"]["architecture_type"].lower()=="tempy"
+            frame_aware = config["model_architecture"].get("frame_aware", default_frame_aware)
             inputs = []
             outputs = []
             if args.test_data_augmentation:
