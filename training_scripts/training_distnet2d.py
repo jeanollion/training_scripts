@@ -105,7 +105,8 @@ if __name__ == "__main__":
         arch_params = config["model_architecture"]
         category_number = arch_params.get("category_number", 0)
         channel_names = ds_conf.get("channel_name", "raw")
-        frame_aware = arch_params.get("frame_aware", arch_params["architecture_type"].lower()=="tema")
+        default_frame_aware = config["model_architecture"]["architecture_type"].lower() == "tema" or config["model_architecture"]["architecture_type"].lower() == "tempy"
+        frame_aware = arch_params.get("frame_aware", default_frame_aware)
         if not isinstance(channel_names, (list, tuple)):
             channel_names = [channel_names]
         elif isinstance(channel_names, tuple):
