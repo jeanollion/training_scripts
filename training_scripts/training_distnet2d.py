@@ -28,7 +28,8 @@ from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
-from distnet_2d.utils.callbacks import ClassWeightScheduler, GradientMonitorCallback, EpsilonCosineDecayCallback
+from distnet_2d.utils.callbacks import ClassWeightScheduler, GradientMonitorCallback, EpsilonCosineDecayCallback, \
+    CosineDecayResume
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
@@ -495,11 +496,12 @@ if __name__ == "__main__":
 
             with strategy.scope():
                 model = init_model(training=True)
-                learning_rate = CosineDecay(initial_learning_rate=LR / 10,
+                learning_rate = CosineDecayResume(initial_learning_rate=LR,
                                             decay_steps=STEP_NUMBER * N_EPOCHS,
+                                            start_step = STEP_NUMBER * START_EPOCH,
                                             alpha=float(MIN_LR) / float(LR),
-                                            warmup_target=LR,
-                                            warmup_steps = STEP_NUMBER * WARMUP_EPOCHS) # TODO: how does this interact with start_epoch > 0 ? use class in BLISSED if necessary.
+                                            warmup_learning_rate_factor=1./10,
+                                            warmup_steps = STEP_NUMBER * WARMUP_EPOCHS)
                 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate, epsilon=EPSILON))
 
                 if LOAD_WEIGHT_PATH is None:
