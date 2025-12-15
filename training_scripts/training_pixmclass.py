@@ -23,7 +23,7 @@ import pix_mclass.training as pmt
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info, check_requirements, \
     compare_versions, print_requirement_error
 
-__VERSION__ = "1.1.3"
+__VERSION__ = "1.1.4"
 __REQUIRES__ = ["dataset_iterator>=0.5.6", "PixMClass>=0.1.5" ]
 
 parser = argparse.ArgumentParser()
@@ -32,7 +32,6 @@ parser.add_argument("--model_idx", type=int, help="index of model")
 parser.add_argument("--train_only", action="store_true", help="train but no export")
 parser.add_argument("--export_only", action="store_true", help="skip model training and export model")
 parser.add_argument("--test_data_augmentation", action="store_true", help="generate and store example of augmented data")
-parser.add_argument("--class_number", type=int, default=3, help="number of class to predict (only used in export_only mode)")
 parser.add_argument("--export_dir", type=str, help="directory to export saved model to")
 parser.add_argument("--n_epochs", type=int, help="number of training epochs")
 parser.add_argument("--step_number", type=int, help="number of training steps per epoch")
@@ -130,8 +129,8 @@ if __name__ == "__main__":
         else:
             return it
 
-    def init_model(n_classes:int, arch_conf:dict):
-        model = get_model(n_classes=n_classes, **arch_conf)
+    def init_model(**kwargs):
+        model = get_model(**kwargs)
         if args.export_only:
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
@@ -153,7 +152,9 @@ if __name__ == "__main__":
         return n
 
     N_INPUTS = get_input_number(config)
-    arch_conf = config.get("model_architecture", {"architecture_type": "unet", "n_inputs": max(1, N_INPUTS)})
+    arch_conf = config.get("model_architecture", {"architecture_type": "unet", "n_inputs": max(1, N_INPUTS), "n_classes": 3})
+    if "n_classes" not in arch_conf:
+        arch_conf["n_classes"] = 3
     if N_INPUTS == -1:
         N_INPUTS = arch_conf["n_inputs"]
     assert arch_conf["n_inputs"] == N_INPUTS, f"Inconsistent input number between datasets ({N_INPUTS}) and model {arch_conf['n_inputs']}"
@@ -161,7 +162,7 @@ if __name__ == "__main__":
 
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
-        model = init_model(args.class_number, arch_conf)
+        model = init_model(**arch_conf)
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
         model.load_weights(WEIGHT_PATH)
         # export model
@@ -182,6 +183,8 @@ if __name__ == "__main__":
             weights /= tot
         else:
             weights = weight_list[0]
+        n_classes = arch_conf.get("n_classes", 3)
+        assert n_classes == weights.shape[0], f"dataset contains {weights.shape[0]} class, but model expects {n_classes} classes"
         print(f"Class weights: {weights}", flush=True)
 
         if args.test_data_augmentation:
@@ -264,7 +267,7 @@ if __name__ == "__main__":
                 loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
 
             with strategy.scope():
-                model = init_model(weights.shape[0], arch_conf)
+                model = init_model(**arch_conf)
                 model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]), loss=loss)
 
             # perform training
