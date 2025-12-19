@@ -4,6 +4,11 @@ FROM tensorflow/tensorflow:2.14.0-gpu
 RUN apt-get clean && apt-get update
 RUN apt-get -y install wget
 RUN pip install --upgrade h5py==3.11.0
+RUN pip install scikit-fmm edt numba elasticdeform
+COPY dataset_iterator /dataset_iterator
+RUN pip install /dataset_iterator
+COPY distnet2d /distnet2d
+RUN pip install /distnet2d
 
 COPY training_scripts/prediction_scripts/predict.py predict.py
 RUN chmod a+r predict.py
