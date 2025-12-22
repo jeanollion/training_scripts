@@ -34,7 +34,7 @@ from distnet_2d.utils.helpers import get_background_foreground_counts, count_lin
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
     get_shm_info, get_input_channel_and_label, get_category_class_weights, compute_category_weights, check_requirements, \
-    print_requirement_error, compare_versions, reinitialize_weights
+    print_requirement_error, compare_versions, reinitialize_weights, export_fp16_model
 
 __VERSION__ = '1.1.5'
 __REQUIRES__ = ["dataset_iterator>=0.5.6", "distnet2d>=0.2.3" ]
@@ -356,8 +356,10 @@ if __name__ == "__main__":
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})", flush=True)
         model = init_model(False)
-        # export model
-        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+        if args.mixed_precision:
+            export_fp16_model(model, SAVED_MODEL_PATH)
+        else:
+            model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
         print("model saved", flush=True)
     else:
         print(f"init iterator...", flush=True)
@@ -612,19 +614,24 @@ if __name__ == "__main__":
                         if is_chief
                         else SAVED_MODEL_PATH + "_tmp_" + os.environ.get("SLURM_PROCID", "")
                     )
-
-                    model.save(
-                        save_path,
-                        include_optimizer=False,
-                        save_traces=True,
-                        inference=True,
-                    )
+                    if args.mixed_precision:
+                        export_fp16_model(model, save_path)
+                    else:
+                        model.save(
+                            save_path,
+                            include_optimizer=False,
+                            save_traces=True,
+                            inference=True,
+                        )
                     print("model saved", flush=True)
 
                     if not is_chief:
                         print(f"cleaning temp models at {save_path}", flush=True)
                         shutil.rmtree(save_path)  # clean up for non chief worker
                 else:
-                    model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+                    if args.mixed_precision:
+                        export_fp16_model(model, SAVED_MODEL_PATH)
+                    else:
+                        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
                     print("model saved", flush=True)
 

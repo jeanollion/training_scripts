@@ -12,6 +12,7 @@ from dataset_iterator.datasetIO import get_datasetIO, MemoryIO
 import numpy as np
 import tensorflow as tf
 import inspect
+from distnet_2d.model.layers import InferenceLayer
 
 
 def merge_dicts(primary_dict, secondary_dict):
@@ -346,9 +347,8 @@ def reinitialize_layer_weights(l, seed):
     _reinitialize_weight("recurrent_initializer", "recurrent_kernel")
     _reinitialize_weight("embeddings_initializer", "embeddings")
 
-    for attribute, value in vars(l).items():
-        if not attribute.startswith("_") and isinstance(value, tf.keras.layers.Layer):
-            reinitialize_layer_weights(value, seed)
+    for attribute, value in get_sub_layer_dict(l).items():
+        reinitialize_layer_weights(value, seed)
 
 
 def compare_versions(v1, v2):
@@ -371,3 +371,294 @@ def compare_versions(v1, v2):
 
 def print_requirement_error():
     print(f"ERROR: Script requirements not met. Update your image or environment", file=sys.stderr, flush=True)
+
+
+def _clone_function(layer):
+    config = layer.get_config()
+    config.pop('output_dtype', None)
+    if isinstance(layer, (tf.keras.layers.BatchNormalization, tf.keras.layers.LayerNormalization, tf.keras.layers.Softmax)):
+        # Keep these in float32 for numerical stability
+        config['dtype'] = 'float32'
+    else:
+        config['dtype'] = 'float16'
+    target_layer = layer.__class__.from_config(config)
+    if isinstance(target_layer, InferenceLayer):
+        target_layer.inference_mode = False  # important : build in train mode and set inference afterwards
+    return target_layer
+
+
+def get_sub_layer_dict(layer):
+    if hasattr(layer, 'layers'):
+        return {l.name: l for l in layer.layers}
+    else:
+        res = {}
+        for attribute, value in vars(layer).items():
+            if not attribute.startswith("_"):
+                if isinstance(value, tf.keras.layers.Layer):
+                    res[value.name] = value
+                elif isinstance(value, (list, tuple)):
+                    for l in value:
+                        if isinstance(l, tf.keras.layers.Layer):
+                            res[l.name] = l
+        return res
+
+
+def transfer_weights_recursive(source_layer, target_layer):
+    """
+    Recursively crawls layers to transfer weights.
+    Matches by layer name and handles precision based on target sublayer dtype.
+    """
+    source_children = get_sub_layer_dict(source_layer)
+    target_children = get_sub_layer_dict(target_layer)
+    if len(source_children) == 0 : # leaf
+        assert len(target_children) == 0
+        source_weights = source_layer.get_weights()
+        if not source_weights:
+            return
+        t_dtype = target_layer.dtype
+        if t_dtype == 'float16':
+            # Clip to prevent FP16 INF on the A6000
+            processed_weights = [
+                np.clip(w, -65500.0, 65500.0).astype(np.float16)
+                for w in source_weights
+            ]
+        else:
+            processed_weights = [w.astype(np.float32) for w in source_weights]
+        #print(f"setting weights for leaf layer: {source_layer.name} ({type(target_layer)}) dtype: {target_layer.variable_dtype} x {target_layer.compute_dtype}")
+        try:
+            target_layer.set_weights(processed_weights)
+        except ValueError as e:
+            print(f"Error in {source_layer.name}: {e}")
+    else:
+        #print( f"setting weights for layer: {source_layer.name} ({type(target_layer)}) dtype: {target_layer.variable_dtype} x {target_layer.compute_dtype}")
+        for name, target_sublayer in target_children.items():
+            if name not in source_children:
+                if target_sublayer.get_weights():
+                    print(f"Skipping {name}: Not in source.")
+                continue
+            source_sublayer = source_children[name]
+            transfer_weights_recursive(source_sublayer, target_sublayer)
+
+
+def _transfer_weights(source_model, target_model):
+    """Transfer weights layer by layer, handling mismatches explicitly."""
+    source_layers = {layer.name: layer for layer in source_model.layers}
+    target_layers = {layer.name: layer for layer in target_model.layers}
+    transferred = 0
+    skipped = 0
+    for name, target_layer in target_layers.items():
+        if name not in source_layers:
+            print(f"⚠ Target layer '{name}' not found in source model - keeping initialized weights")
+            skipped += 1
+            continue
+        source_layer = source_layers[name]
+        source_weights = source_layer.get_weights()
+        target_weights = target_layer.get_weights()
+
+        if len(source_weights) != len(target_weights):
+            print(f"⚠ Layer '{name}': weight count mismatch ({len(source_weights)} vs {len(target_weights)})")
+            print(f"⚠ Layer '{name}': source weights: {[w.shape for w in source_weights]} target weights: {[w.shape for w in target_weights]}")
+            skipped += 1
+            continue
+
+        # Check shapes match
+        shapes_match = all(sw.shape == tw.shape for sw, tw in zip(source_weights, target_weights))
+        if not shapes_match:
+            print(f"⚠ Layer '{name}': weight shape mismatch")
+            for i, (sw, tw) in enumerate(zip(source_weights, target_weights)):
+                if sw.shape != tw.shape:
+                    print(f"    Weight {i}: {sw.shape} vs {tw.shape}")
+            skipped += 1
+            continue
+
+        target_dtype = target_layer.dtype
+
+        if target_dtype == 'float16':
+            source_weights = [np.clip(w, -65500.0, 65500.0).astype(np.float16) for w in source_weights]
+        else:
+            # Keep as float32 for BN/Softmax
+            source_weights = [w.astype(np.float32) for w in source_weights]
+
+        target_layer.set_weights(source_weights)
+        transferred += 1
+
+    print(f"\n✓ Transferred {transferred} layers, skipped {skipped} layers")
+
+
+def set_inference_mode(layer):
+    if isinstance(layer, InferenceLayer):
+        layer.inference_mode = True # build in train mode
+    for n,l in get_sub_layer_dict(layer).items():
+        set_inference_mode(l)
+
+def export_fp16_model(original_model, path):
+    fp16_model = tf.keras.models.clone_model(
+        original_model,
+        clone_function=_clone_function
+    )
+
+    fp16_model.compile()
+    transfer_weights_recursive(original_model, fp16_model)
+    set_inference_mode(fp16_model)
+    fp16_model.trainable = False
+    # Compile with XLA
+    try:
+        fp16_model.compile(jit_compile=True)
+        print("XLA (jit_compile) enabled successfully.")
+    except Exception as e:
+        print(f"Could not enable XLA: {e}")
+        fp16_model.compile()
+    fp16_model.save(path)
+
+
+def analyze_weight_overflow(model, threshold=65504.0):
+    """
+    Analyze which weights would overflow when cast to FP16.
+    FP16 range: approximately ±65,504
+    """
+    print("=" * 80)
+    print("FP16 OVERFLOW ANALYSIS")
+    print("=" * 80)
+    print(f"\nFP16 max value: {threshold}")
+    print(f"Analyzing {len(model.layers)} layers...\n")
+
+    overflow_layers = []
+    total_weights = 0
+    total_overflow = 0
+
+    for layer in model.layers:
+        weights = layer.get_weights()
+        if not weights:
+            continue
+
+        layer_has_overflow = False
+        layer_info = {
+            'name': layer.name,
+            'type': type(layer).__name__,
+            'weights': []
+        }
+
+        for i, w in enumerate(weights):
+            total_weights += w.size
+
+            # Check for overflow
+            max_val = np.max(np.abs(w))
+            min_val = np.min(np.abs(w[w != 0]))  # Min non-zero value
+            overflow_count = np.sum(np.abs(w) > threshold)
+            underflow_count = np.sum((np.abs(w) < 1e-7) & (w != 0))
+
+            if overflow_count > 0 or max_val > threshold:
+                layer_has_overflow = True
+                total_overflow += overflow_count
+
+                weight_info = {
+                    'index': i,
+                    'shape': w.shape,
+                    'dtype': w.dtype,
+                    'max_abs': max_val,
+                    'min_abs_nonzero': min_val if np.any(w != 0) else 0,
+                    'mean_abs': np.mean(np.abs(w)),
+                    'std': np.std(w),
+                    'overflow_count': overflow_count,
+                    'underflow_count': underflow_count,
+                    'total_elements': w.size,
+                    'overflow_pct': (overflow_count / w.size) * 100
+                }
+                layer_info['weights'].append(weight_info)
+
+        if layer_has_overflow:
+            overflow_layers.append(layer_info)
+
+    # Print detailed report
+    if overflow_layers:
+        print(f"⚠️  FOUND {len(overflow_layers)} LAYERS WITH OVERFLOW ISSUES\n")
+
+        for layer_info in overflow_layers:
+            print(f"Layer: {layer_info['name']} ({layer_info['type']})")
+            print("-" * 80)
+
+            for w_info in layer_info['weights']:
+                print(f"  Weight {w_info['index']}: shape={w_info['shape']}")
+                print(
+                    f"    Max absolute value: {w_info['max_abs']:.2e} {'⚠️ OVERFLOW!' if w_info['max_abs'] > threshold else ''}")
+                print(f"    Min absolute value (non-zero): {w_info['min_abs_nonzero']:.2e}")
+                print(f"    Mean absolute value: {w_info['mean_abs']:.2e}")
+                print(f"    Std deviation: {w_info['std']:.2e}")
+                print(
+                    f"    Overflow elements: {w_info['overflow_count']} / {w_info['total_elements']} ({w_info['overflow_pct']:.2f}%)")
+
+                if w_info['underflow_count'] > 0:
+                    underflow_pct = (w_info['underflow_count'] / w_info['total_elements']) * 100
+                    print(f"    ⚠️ Underflow elements: {w_info['underflow_count']} ({underflow_pct:.2f}%)")
+
+                # Suggest fixes
+                if w_info['max_abs'] > threshold:
+                    scale_factor = threshold / w_info['max_abs'] * 0.95  # 95% of max to be safe
+                    print(f"    💡 Suggestion: Scale weights by {scale_factor:.4f} to fit in FP16")
+                print()
+            print()
+
+    if overflow_layers:
+        print("\nDETAILED VALUE INSPECTION (first problematic layer):")
+        layer_info = overflow_layers[0]
+        layer = model.get_layer(layer_info['name'])
+        weights = layer.get_weights()
+
+        for w_info in layer_info['weights']:
+            w = weights[w_info['index']]
+            overflow_mask = np.abs(w) > 65504.0
+
+            if np.any(overflow_mask):
+                overflow_values = w[overflow_mask]
+                print(f"\nWeight {w_info['index']} overflow values:")
+                print(f"  Count: {len(overflow_values)}")
+                print(f"  Min overflow: {np.min(np.abs(overflow_values)):.2e}")
+                print(f"  Max overflow: {np.max(np.abs(overflow_values)):.2e}")
+                print(f"  Sample values: {overflow_values[:10]}")
+
+        print(f"\nSUMMARY:")
+        print(f"  Total weights analyzed: {total_weights:,}")
+        print(f"  Total overflow values: {total_overflow:,}")
+        print(f"  Overflow percentage: {(total_overflow / total_weights) * 100:.4f}%")
+
+    else:
+        print("✓ NO OVERFLOW ISSUES FOUND!")
+        print(f"  All {total_weights:,} weight values fit within FP16 range")
+
+    print("\n" + "=" * 80)
+    return overflow_layers
+
+def test_fp16_conversion(model):
+    """
+    Test actual conversion to FP16 and measure differences.
+    """
+    print("\n" + "=" * 80)
+    print("TESTING FP16 CONVERSION")
+    print("=" * 80)
+
+    for layer in model.layers:
+        weights = layer.get_weights()
+        if not weights:
+            continue
+
+        try:
+            # Try converting to FP16
+            weights_fp16 = [w.astype(np.float16) for w in weights]
+
+            # Check for inf/nan after conversion
+            for i, (w_orig, w_fp16) in enumerate(zip(weights, weights_fp16)):
+                inf_count = np.sum(np.isinf(w_fp16))
+                nan_count = np.sum(np.isnan(w_fp16))
+
+                if inf_count > 0 or nan_count > 0:
+                    print(f"❌ Layer: {layer.name}, Weight {i}")
+                    print(f"   Shape: {w_orig.shape}")
+                    print(f"   Original range: [{np.min(w_orig):.2e}, {np.max(w_orig):.2e}]")
+                    print(f"   FP16 Inf count: {inf_count}")
+                    print(f"   FP16 NaN count: {nan_count}")
+                    print()
+        except Exception as e:
+            print(f"❌ Error converting layer {layer.name}: {e}")
+
+    print("=" * 80)
+
