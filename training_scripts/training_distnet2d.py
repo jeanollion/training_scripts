@@ -324,10 +324,10 @@ if __name__ == "__main__":
 
     def init_loss_scales(model, train_it, steps:int=30):
         steps = min(len(train_it), steps)
-        print("initializing loss scales...", flush=True)
         losses_names = model.get_sub_losses_names()
         acc_losses = {k: [] for k in losses_names}
         if steps>0:
+            print("initializing loss scales...", flush=True)
             @tf.function
             def run_batch(model, data):
                 return model.test_step(data)
