@@ -89,8 +89,7 @@ def make_prediction(model, input_path, precision):
         outputs = [out.numpy() if not isinstance(out, np.ndarray) else out for out in outputs]
         #print(f"output dtype: {[o.dtype for o in outputs]}")
         #print(f"output shape: {[o.shape for o in outputs]}")
-        if precision == "float16":
-            outputs = [out.astype(np.float32) if out.dtype == np.float16 else out for out in outputs] # TODO dump float16 as short
+        outputs = [out.astype(np.float32) if out.dtype == np.float16 else out for out in outputs] # TODO dump float16 as short
         t2 = time.time()
         print(f"transfer & conversion took: {t2 - t1:.4f}s", flush=True)
         for p in paths:
