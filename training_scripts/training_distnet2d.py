@@ -29,7 +29,7 @@ from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.callbacks import ClassWeightScheduler, GradientMonitorCallback, EpsilonCosineDecayCallback, \
-    CosineDecayResume, ScheduledDropoutCallback, ScheduledGradientCallback
+    CosineDecayResume, ScheduledDropoutCallback, ScheduledGradientCallback, LogGradientCallback
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
@@ -515,6 +515,7 @@ if __name__ == "__main__":
             callbacks = [LogLRCallback(), checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
             callbacks.append(ScheduledDropoutCallback(N_EPOCHS)) # TODO for re-training: add option to disable the callback
             callbacks.append(ScheduledGradientCallback(N_EPOCHS))  # TODO for re-training: add option to disable the callback
+            callbacks.append(LogGradientCallback(STEP_NUMBER))
             if MIN_EPSILON<EPSILON:
                 eps_cb = EpsilonCosineDecayCallback(start_epsilon=EPSILON, min_epsilon=MIN_EPSILON, decay_steps=STEP_NUMBER * WARMUP_EPOCHS)
                 callbacks.append(eps_cb)
