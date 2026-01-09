@@ -67,7 +67,7 @@ if __name__ == "__main__":
             print(f"script version is out-of-date: {__VERSION__} minimal version: {args.min_script_version}", flush=True)
             print_requirement_error()
             sys.exit(1)
-    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')} python: {platform.python_version()}")
+    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}  tensorflow : {tf.__version__} python: {platform.python_version()}")
     if args.mixed_precision:
         mixed_precision.set_global_policy('mixed_float16')
         print(f"Mixed precision policy= {mixed_precision.global_policy()}")
@@ -102,7 +102,9 @@ if __name__ == "__main__":
     def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
         data_aug_params = ds_conf.get("data_augmentation", {})
         seg_args = config.get("segmentation", {})
-        tracking = not seg_args.get("segment_only", False)
+        tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
+        segmentation = seg_args.get("segmentation", True)
+        print(f"segmentation: {segmentation} tracking: {tracking}")
         arch_params = config["model_architecture"]
         category_number = arch_params.get("category_number", 0)
         channel_names = ds_conf.get("channel_name", "raw")
@@ -168,6 +170,8 @@ if __name__ == "__main__":
 
         pp_fun = chain_pp_fun(pp_fun_list)
         fw = arch_params["frame_window"]
+        if fw == 0:
+            frame_aware = False
         iterator_params = dict(erase_edge_cell_size=data_aug_params.get("erase_edge_cell_size", 0),
                                aug_remove_prob=data_aug_params.get("static_probability", 0.01),
                                future_frames=arch_params.get("next", True),
@@ -183,6 +187,7 @@ if __name__ == "__main__":
         return DyDxIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
                             input_label_keywords=label_names, array_keywords=array_kw,
                             input_label_center_idx = seg_args.get("input_label_center_idx", -1),
+                            segmentation=segmentation,
                             tracking = tracking,
                             frame_aware = frame_aware,
                             group_keyword=ds_conf.get("keyword", None),
@@ -219,7 +224,8 @@ if __name__ == "__main__":
     def init_model(training:bool):
         arch_args = copy.deepcopy(config["model_architecture"])
         seg_args = config.get("segmentation", {})
-        tracking = not seg_args.get("segment_only", False)
+        tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
+        segmentation = seg_args.get("segmentation", True)
         shape = config["dataset_parameters"]["input_shape"]
         input_shape = [None if s <= 0 else s for s in shape]
         nchan, nlabel = get_input_channel_and_label(config)
@@ -242,7 +248,7 @@ if __name__ == "__main__":
             print(f"edm background/foreground balancing weights {edm_class_weights}")
         arch = get_architecture(arch_args.pop("architecture_type", "blend"),
                                 scale_edm=seg_args.get("scale_edm", False),
-                                spatial_dimensions=input_shape, n_inputs=n_inputs, tracking=tracking, l2_reg=0, **arch_args)
+                                spatial_dimensions=input_shape, n_inputs=n_inputs, segmentation=segmentation, tracking=tracking, **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
         if training: # perform test step if at least one test dataset
             ds_types = [ ds_conf.get("type", "TRAIN") for ds_conf in config["dataset_list"] ]
@@ -299,9 +305,10 @@ if __name__ == "__main__":
         set_to_iterator(iterator, fun)
 
 
-    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, tracking:bool=True):
-        metrics_fun_ = get_metrics_fun(scale, category=category_number>1, tracking=tracking)
+    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, segmentation:bool=True, tracking:bool=True):
+        metrics_fun_ = get_metrics_fun(scale, category=category_number>1, segmentation=segmentation, tracking=tracking)
         if tracking:
+            assert segmentation
             def fun(y_true, y_pred):
                 fw = frame_window
                 n_frame_pairs = fw * 2
@@ -314,15 +321,22 @@ if __name__ == "__main__":
                                     tf.gather(y_pred[3], indices=d_indices, axis=-1),
                                     tf.gather(y_pred[4], indices=lm_indices, axis=-1), y_true[0], y_true[5] if category_number>1 else None, y_true[2], y_true[3],
                                     y_true[4], y_true[-3], y_true[-2], y_true[-1])
-        else:
+        elif segmentation:
             def fun(y_true, y_pred):
                 fw = frame_window
                 return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1], y_pred[2][..., fw*category_number:(fw+1)*category_number] if category_number>1 else None,
                                     y_true[0], y_true[2] if category_number>1 else None, y_true[-2], y_true[-1])
+        else:
+            assert category_number > 1, f"category_number {category_number} must be > 1"
+            def fun(y_true, y_pred):
+                fw = frame_window
+                return metrics_fun_(y_pred[0][..., fw*category_number:(fw+1)*category_number], y_true[1], y_true[-2], y_true[-1])
         return fun
 
 
     def init_loss_scales(model, train_it, steps:int=30):
+        if len(model.get_sub_losses_names()) == 1:
+            return
         steps = min(len(train_it), steps)
         losses_names = model.get_sub_losses_names()
         acc_losses = {k: [] for k in losses_names}
@@ -370,15 +384,33 @@ if __name__ == "__main__":
         #it_steps = STEP_NUMBER if WORKERS==1 else 0
 
         if RUN_TEST:
+            seg_args = config.get("segmentation", {})
+            tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
+            segmentation = seg_args.get("segmentation", True)
+            category_number = config["model_architecture"].get("category_number", 0)
+            category_only = not segmentation and not tracking and category_number > 0
             train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
             test_param = config.get("test_data_augmentation_parameters", {})
             root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
+            arch_params = config["model_architecture"]
+            default_frame_aware = arch_params["architecture_type"].lower() == "tema" or arch_params[
+                "architecture_type"].lower() == "tempy"
+            frame_aware = arch_params.get("frame_aware", default_frame_aware)
+            if arch_params["frame_window"] == 0:
+                frame_aware = False
+            if segmentation and tracking:
+                output_name = ["EDM", "CDM", "dY", "dX", "LinkMultiplicity", "Category"]
+            elif segmentation:
+                output_name = ["EDM", "CDM", "Category"]
+            elif category_only:
+                output_name = ["Category"]
+            else:
+                raise ValueError("Invalid configuration: allowed mode = segmentation + tracking (+category) / segmentation (+category) / category only")
             idx = test_param.get("batch_index", -1)
             if idx < 0 or idx >= len(train_it):
                 idx = random.randint(0, len(train_it)-1)
-            default_frame_aware  = config["model_architecture"]["architecture_type"].lower()=="tema" or config["model_architecture"]["architecture_type"].lower()=="tempy"
-            frame_aware = config["model_architecture"].get("frame_aware", default_frame_aware)
+
             inputs = []
             outputs = []
             if args.test_data_augmentation:
@@ -420,9 +452,12 @@ if __name__ == "__main__":
                 inputs = [np.transpose(inputs, transpose_axis)]
                 input_names = cnames
             if len(outputs)>0:
-                outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
-                outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
-                output_name = ["EDM", "CDM", "dY", "dX", "LinkMultiplicity", "Category"]
+                if len(output_name) > 1:
+                    outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
+                    outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
+                else:
+                    outputs = [np.transpose(np.stack(outputs, 0), transpose_axis)]
+
             print(f"writing {len(outputs)+len(inputs)} x {inputs[0].shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
                 for i, o in enumerate(inputs):
@@ -440,9 +475,10 @@ if __name__ == "__main__":
             hard_sample_mining_param = t_p.get("hard_sample_mining", {})
             scale = hard_sample_mining_param.get("scale", hard_sample_mining_param.get("center_scale", 4) * 2) if hard_sample_mining_param is not None else 8
             seg_args = config.get("segmentation", {})
-            tracking = not seg_args.get("segment_only", False)
+            tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
+            segmentation = seg_args.get("segmentation", True)
             category_number = config["model_architecture"].get("category_number", 0)
-            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, tracking=tracking), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
             if isinstance(batch_size, (list, tuple)):
                 tile_column = np.concatenate([np.tile(np.arange(n_t), b_s) for b_s, n_t in zip(batch_size, n_tiles)], axis=0)
             else:
@@ -551,9 +587,10 @@ if __name__ == "__main__":
                 hsm_it = get_iterator(config, init_iterator, existing_iterator=train_it, step_number=0, shuffle=False, hsm=True) # needs to be a different iterator as iterator.return_central_only
                 configure_metrics_iterator(hsm_it)
                 seg_args = config.get("segmentation", {})
-                tracking = not seg_args.get("segment_only", False)
+                tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
+                segmentation = seg_args.get("segmentation", True)
                 arch_params = config["model_architecture"]
-                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), tracking=tracking), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
+                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), segmentation=segmentation, tracking=tracking), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
                 callbacks.append(hsm_cb)
             else:
                 hsm_it = None

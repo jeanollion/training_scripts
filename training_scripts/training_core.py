@@ -485,13 +485,17 @@ def _transfer_weights(source_model, target_model):
     print(f"\n✓ Transferred {transferred} layers, skipped {skipped} layers")
 
 
-def set_inference_mode(layer):
+def set_inference_mode(layer, verbose:bool=False):
     if isinstance(layer, InferenceLayer):
+        if verbose:
+            print(f"set inference mode for layer: {layer.name}")
         layer.inference_mode = True # build in train mode
     for n,l in get_sub_layer_dict(layer).items():
         set_inference_mode(l)
 
 def export_fp16_model(original_model, path):
+    analyze_weight_overflow(original_model)
+    test_fp16_conversion(original_model)
     fp16_model = tf.keras.models.clone_model(
         original_model,
         clone_function=_clone_function
@@ -501,8 +505,8 @@ def export_fp16_model(original_model, path):
     transfer_weights_recursive(original_model, fp16_model)
     set_inference_mode(fp16_model)
     fp16_model.trainable = False
-    # Compile with XLA
-    try:
+
+    try: # Compile with XLA
         fp16_model.compile(jit_compile=True)
         print("XLA (jit_compile) enabled successfully.")
     except Exception as e:
@@ -543,9 +547,10 @@ def analyze_weight_overflow(model, threshold=65504.0):
 
             # Check for overflow
             max_val = np.max(np.abs(w))
-            min_val = np.min(np.abs(w[w != 0]))  # Min non-zero value
+            non_null = w != 0
+            min_val = 0 if np.sum(non_null) == 0 else  np.min(np.abs(w[non_null]))  # Min non-zero value
             overflow_count = np.sum(np.abs(w) > threshold)
-            underflow_count = np.sum((np.abs(w) < 1e-7) & (w != 0))
+            underflow_count = np.sum((np.abs(w) < 1e-7) & non_null)
 
             if overflow_count > 0 or max_val > threshold:
                 layer_has_overflow = True

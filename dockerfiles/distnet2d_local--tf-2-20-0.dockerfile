@@ -1,4 +1,4 @@
-FROM training_dnn:tf-2.16.2
+FROM training_dnn:tf-2.20.0
 RUN pip install tf-keras==2.16.0
 RUN pip install --upgrade SharedArray==3.2.4
 RUN pip install dill
