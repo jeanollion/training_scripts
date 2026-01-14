@@ -31,9 +31,10 @@ from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.callbacks import ClassWeightScheduler, GradientMonitorCallback, EpsilonCosineDecayCallback, \
     CosineDecayResume, ScheduledDropoutCallback, ScheduledGradientCallback, LogGradientCallback
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
+from distnet_2d.utils.losses import compute_focal_weights
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
-    get_shm_info, get_input_channel_and_label, get_category_class_weights, compute_category_weights, check_requirements, \
+    get_shm_info, get_input_channel_and_label, get_category_class_counts, compute_category_weights, check_requirements, \
     print_requirement_error, compare_versions, reinitialize_weights, export_fp16_model
 
 __VERSION__ = '1.1.5'
@@ -200,12 +201,11 @@ if __name__ == "__main__":
         counts = np.array([0, 0], dtype="float128")
         for i, ds_conf in enumerate(config["dataset_list"]):
             counts += get_background_foreground_counts(ds_conf["path"], channel_keyword='/regionLabels', group_keyword=ds_conf.get("keyword", None))
-        weights = compute_category_weights(dict(zip(["bck", "fore"], counts.tolist())), power_law=power_law, max_weight=max_weight)
+        weights = compute_category_weights(counts.tolist(), power_law=power_law, max_weight=max_weight)
         return weights.astype("float32")
 
     def get_link_multiplicity_class_weights(config: dict, max_weight= 50, power_law:float=1):
-        counts = {i: 0 for i in range(0, 3)}
-        log = True
+        counts = [0] * 3
         for i, ds_conf in enumerate(config["dataset_list"]):
             dataset = get_datasetIO(ds_conf["path"], 'r')
             paths = dataset.get_dataset_paths(ARRAY_KEYWORDS[0], ds_conf.get("keyword", None))
@@ -215,7 +215,6 @@ if __name__ == "__main__":
                 counts[0] += s
                 counts[1] += m
                 counts[2] += n
-                log = False
             dataset.close()
         print(f"link multiplicity counts: {counts}")
         return compute_category_weights(counts, max_weight=max_weight, power_law = power_law)
@@ -238,9 +237,12 @@ if __name__ == "__main__":
             link_multiplicity_class_weights = [1, 1, 1]
         category_number = arch_args.get("category_number", 0)
         if training and category_number > 1 and seg_args.get("balance_category_frequency", True):
-            category_class_weights = get_category_class_weights(config, category_number,  category_keyword=ARRAY_KEYWORDS[1], power_law = seg_args.get("balance_category_frequency_parameters", {}).get("weight_power_law", 1))
+            category_class_counts = get_category_class_counts(config, category_number, category_keyword=ARRAY_KEYWORDS[1])
+            category_class_weights = compute_category_weights(category_class_counts, power_law=seg_args.get("balance_category_frequency_parameters", {}).get("weight_power_law", 1))
+            category_focal_weights = compute_focal_weights( category_class_counts )
             print(f"Category class weights: {category_class_weights}")
         else:
+            category_focal_weights = 2.0
             category_class_weights = [1] * category_number
         balance_edm_weight = "balance_edm_frequency_parameters" in seg_args
         edm_class_weights = get_edm_class_weights(config, power_law = seg_args["balance_edm_frequency_parameters"].get("weight_power_law", 1)) if training and balance_edm_weight else None
@@ -262,7 +264,8 @@ if __name__ == "__main__":
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights,
-                                  category_class_weights=category_class_weights, perform_test_step=perform_test_step, scale_losses = not legacy)
+                                  category_class_weights=category_class_weights, category_focal_weights = category_focal_weights,
+                                  perform_test_step=perform_test_step, scale_losses = not legacy)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"

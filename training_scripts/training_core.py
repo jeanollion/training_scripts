@@ -266,7 +266,7 @@ def get_input_channel_and_label(config, return_names:bool = False):
     else:
         return nchan[0], nlabel[0]
 
-def get_category_class_weights(config:dict, category_number:int, category_keyword:str= "/category", max_weight=None, power_law:float=1):
+def get_category_class_counts(config:dict, category_number:int, category_keyword:str= "/category"):
     counts = {i:0 for i in range(0, category_number)}
     for i, ds_conf in enumerate(config["dataset_list"]):
         dataset = get_datasetIO(ds_conf["path"], 'r')
@@ -281,15 +281,15 @@ def get_category_class_weights(config:dict, category_number:int, category_keywor
                 else:
                     raise ValueError(f"Category {category} is present in dataset: {p} whereas #{category_number} categories are expected")
         dataset.close()
-    return compute_category_weights(counts, max_weight=max_weight, power_law=power_law)
+    return [counts[c] for c in sorted(counts.keys())]
 
-def compute_category_weights(counts:dict, power_law:float=1, max_weight = None):
+def compute_category_weights(class_counts:list, power_law:float=1, max_weight = None):
     # compute weights
-    total_samples = sum(counts.values())
-    num_classes = len(counts)
-    class_weights = {}
+    total_samples = sum(class_counts)
+    num_classes = len(class_counts)
+    class_weights = [0]*num_classes
 
-    for category, count in counts.items():
+    for category, count in enumerate(class_counts):
         # Calculate weight as the total samples divided by (number of classes * number of samples in class)
         weight = total_samples / (num_classes * max(1, count))
         class_weights[category] = weight
@@ -298,7 +298,7 @@ def compute_category_weights(counts:dict, power_law:float=1, max_weight = None):
             class_weights[category] = class_weights[category] ** power_law
         if max_weight is not None and max_weight > 0:
             class_weights[category] = min( class_weights[category], max_weight)
-    return np.array([weight for _, weight in class_weights.items()])
+    return np.array(class_weights)
 
 def check_requirements(requires:list):
     for req in requires:
