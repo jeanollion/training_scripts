@@ -1,5 +1,8 @@
 from pathlib import Path
 import sys
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 path_root = Path(__file__).parents[2] / "training_scripts"
 #sys.path.append(str(path_root ))
 print(path_root)
@@ -15,7 +18,6 @@ import h5py
 from dataset_iterator.image_data_generator import get_image_data_generator
 from pix_mclass.utils import ensure_multiplicity
 from pix_mclass import get_unet
-from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
 import pix_mclass.training as pmt
 
 print(np.tile(np.arange(10), 2))
