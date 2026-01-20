@@ -5,6 +5,7 @@ from math import ceil
 import pkg_resources
 
 from dataset_iterator import ConcatIterator
+from dataset_iterator.keras_layers import InferenceLayer
 from dataset_iterator.tile_utils import OVERLAP_MODE
 from dataset_iterator.utils import transpose_list, is_null, ensure_multiplicity, is_list
 from dataset_iterator.helpers import get_optimal_tiling, get_image_shape
@@ -12,7 +13,6 @@ from dataset_iterator.datasetIO import get_datasetIO, MemoryIO
 import numpy as np
 import tensorflow as tf
 import inspect
-from distnet_2d.model.layers import InferenceLayer
 
 
 def merge_dicts(primary_dict, secondary_dict):
