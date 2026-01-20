@@ -31,7 +31,6 @@ from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.callbacks import ClassWeightScheduler, GradientMonitorCallback, EpsilonCosineDecayCallback, \
     CosineDecayResume, ScheduledDropoutCallback, ScheduledGradientCallback, LogGradientCallback
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
-from distnet_2d.utils.losses import compute_focal_weights
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
     get_shm_info, get_input_channel_and_label, get_category_class_counts, compute_category_weights, check_requirements, \
@@ -82,7 +81,7 @@ if __name__ == "__main__":
     LOG_PATH = os.path.join(args.config_dir, model_name )
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
-    WARMUP_EPOCHS = 20
+    WARMUP_EPOCHS = max(2, int(N_EPOCHS / 50))
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
     VAL_STEP_NUMBER = t_p.get("validation_step_number", 100)
     VAL_FREQ = t_p.get("validation_frequency", 1)
@@ -150,6 +149,7 @@ if __name__ == "__main__":
         for sp, cname in zip(scaling_parameters, channel_names):
             sp["dataset"] = dataset
             sp["channel_name"] = cname
+            sp["group_keyword"] = ds_conf.get("keyword", None)
         affine_transform_parameters = data_aug_params.get("affine_transform_parameters", None)
         data_generators = [get_image_data_generator(scaling_parameters=sp, affine_transform_parameters=affine_transform_parameters) for sp in scaling_parameters]
         affine_transform_parameters_mask = None if affine_transform_parameters is None else {**affine_transform_parameters, "interpolation_order": 0}
@@ -239,10 +239,9 @@ if __name__ == "__main__":
         if training and category_number > 1 and seg_args.get("balance_category_frequency", True):
             category_class_counts = get_category_class_counts(config, category_number, category_keyword=ARRAY_KEYWORDS[1])
             category_class_weights = compute_category_weights(category_class_counts, power_law=seg_args.get("balance_category_frequency_parameters", {}).get("weight_power_law", 1))
-            category_focal_weights = compute_focal_weights( category_class_counts )
-            print(f"Category class weights: {category_class_weights}")
+            category_focal_weight = 2.0 # TODO argument
         else:
-            category_focal_weights = 2.0
+            category_focal_weight = 2.0
             category_class_weights = [1] * category_number
         balance_edm_weight = "balance_edm_frequency_parameters" in seg_args
         edm_class_weights = get_edm_class_weights(config, power_law = seg_args["balance_edm_frequency_parameters"].get("weight_power_law", 1)) if training and balance_edm_weight else None
@@ -264,7 +263,7 @@ if __name__ == "__main__":
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights,
-                                  category_class_weights=category_class_weights, category_focal_weights = category_focal_weights,
+                                  category_class_weights=category_class_weights, category_focal_weight = category_focal_weight,
                                   perform_test_step=perform_test_step, scale_losses = not legacy)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
