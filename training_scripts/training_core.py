@@ -402,7 +402,6 @@ def get_sub_layer_dict(layer):
                             res[l.name] = l
         return res
 
-
 def transfer_weights_recursive(source_layer, target_layer):
     """
     Recursively crawls layers to transfer weights.
@@ -417,9 +416,8 @@ def transfer_weights_recursive(source_layer, target_layer):
             return
         t_dtype = target_layer.dtype
         if t_dtype == 'float16':
-            # Clip to prevent FP16 INF on the A6000
             processed_weights = [
-                np.clip(w, -65500.0, 65500.0).astype(np.float16)
+                np.clip(w, -65000.0, 65000.0).astype(np.float16)
                 for w in source_weights
             ]
         else:
@@ -439,52 +437,6 @@ def transfer_weights_recursive(source_layer, target_layer):
             source_sublayer = source_children[name]
             transfer_weights_recursive(source_sublayer, target_sublayer)
 
-
-def _transfer_weights(source_model, target_model):
-    """Transfer weights layer by layer, handling mismatches explicitly."""
-    source_layers = {layer.name: layer for layer in source_model.layers}
-    target_layers = {layer.name: layer for layer in target_model.layers}
-    transferred = 0
-    skipped = 0
-    for name, target_layer in target_layers.items():
-        if name not in source_layers:
-            print(f"⚠ Target layer '{name}' not found in source model - keeping initialized weights")
-            skipped += 1
-            continue
-        source_layer = source_layers[name]
-        source_weights = source_layer.get_weights()
-        target_weights = target_layer.get_weights()
-
-        if len(source_weights) != len(target_weights):
-            print(f"⚠ Layer '{name}': weight count mismatch ({len(source_weights)} vs {len(target_weights)})")
-            print(f"⚠ Layer '{name}': source weights: {[w.shape for w in source_weights]} target weights: {[w.shape for w in target_weights]}")
-            skipped += 1
-            continue
-
-        # Check shapes match
-        shapes_match = all(sw.shape == tw.shape for sw, tw in zip(source_weights, target_weights))
-        if not shapes_match:
-            print(f"⚠ Layer '{name}': weight shape mismatch")
-            for i, (sw, tw) in enumerate(zip(source_weights, target_weights)):
-                if sw.shape != tw.shape:
-                    print(f"    Weight {i}: {sw.shape} vs {tw.shape}")
-            skipped += 1
-            continue
-
-        target_dtype = target_layer.dtype
-
-        if target_dtype == 'float16':
-            source_weights = [np.clip(w, -65500.0, 65500.0).astype(np.float16) for w in source_weights]
-        else:
-            # Keep as float32 for BN/Softmax
-            source_weights = [w.astype(np.float32) for w in source_weights]
-
-        target_layer.set_weights(source_weights)
-        transferred += 1
-
-    print(f"\n✓ Transferred {transferred} layers, skipped {skipped} layers")
-
-
 def set_inference_mode(layer, verbose:bool=False):
     if isinstance(layer, InferenceLayer):
         if verbose:
@@ -495,7 +447,6 @@ def set_inference_mode(layer, verbose:bool=False):
 
 def export_fp16_model(original_model, path):
     analyze_weight_overflow(original_model)
-    test_fp16_conversion(original_model)
     fp16_model = tf.keras.models.clone_model(
         original_model,
         clone_function=_clone_function
@@ -514,6 +465,13 @@ def export_fp16_model(original_model, path):
         fp16_model.compile()
     fp16_model.save(path)
 
+def flatten_model_layers(layer, layers = {}, prefix=""):
+    sub_layers = get_sub_layer_dict(layer)
+    if len(sub_layers) == 0:
+        layers[prefix+layer.name] = layer
+    else:
+        for l in sub_layers.values():
+            flatten_model_layers(l, layers, prefix = prefix+layer.name+"/" if not isinstance(layer, tf.keras.Model) else "")
 
 def analyze_weight_overflow(model, threshold=65504.0):
     """
@@ -524,21 +482,24 @@ def analyze_weight_overflow(model, threshold=65504.0):
     print("FP16 OVERFLOW ANALYSIS")
     print("=" * 80)
     print(f"\nFP16 max value: {threshold}")
-    print(f"Analyzing {len(model.layers)} layers...\n")
+    layers = {}
+    flatten_model_layers(model, layers=layers)
+    print(f"Analyzing {len(layers)} layers...\n")
 
     overflow_layers = []
     total_weights = 0
     total_overflow = 0
 
-    for layer in model.layers:
+    for name, layer in layers.items():
         weights = layer.get_weights()
-        if not weights:
+        if not weights or layer.dtype == 'float32':
             continue
 
         layer_has_overflow = False
         layer_info = {
-            'name': layer.name,
+            'name': name,
             'type': type(layer).__name__,
+            'weight_shapes': [w.shape for w in weights],
             'weights': []
         }
 
@@ -579,7 +540,7 @@ def analyze_weight_overflow(model, threshold=65504.0):
         print(f"⚠️  FOUND {len(overflow_layers)} LAYERS WITH OVERFLOW ISSUES\n")
 
         for layer_info in overflow_layers:
-            print(f"Layer: {layer_info['name']} ({layer_info['type']})")
+            print(f"Layer: {layer_info['name']} ({layer_info['type']}) weights: {layer_info['weight_shapes']})")
             print("-" * 80)
 
             for w_info in layer_info['weights']:
@@ -595,75 +556,9 @@ def analyze_weight_overflow(model, threshold=65504.0):
                 if w_info['underflow_count'] > 0:
                     underflow_pct = (w_info['underflow_count'] / w_info['total_elements']) * 100
                     print(f"    ⚠️ Underflow elements: {w_info['underflow_count']} ({underflow_pct:.2f}%)")
-
-                # Suggest fixes
-                if w_info['max_abs'] > threshold:
-                    scale_factor = threshold / w_info['max_abs'] * 0.95  # 95% of max to be safe
-                    print(f"    💡 Suggestion: Scale weights by {scale_factor:.4f} to fit in FP16")
-                print()
-            print()
-
-    if overflow_layers:
-        print("\nDETAILED VALUE INSPECTION (first problematic layer):")
-        layer_info = overflow_layers[0]
-        layer = model.get_layer(layer_info['name'])
-        weights = layer.get_weights()
-
-        for w_info in layer_info['weights']:
-            w = weights[w_info['index']]
-            overflow_mask = np.abs(w) > 65504.0
-
-            if np.any(overflow_mask):
-                overflow_values = w[overflow_mask]
-                print(f"\nWeight {w_info['index']} overflow values:")
-                print(f"  Count: {len(overflow_values)}")
-                print(f"  Min overflow: {np.min(np.abs(overflow_values)):.2e}")
-                print(f"  Max overflow: {np.max(np.abs(overflow_values)):.2e}")
-                print(f"  Sample values: {overflow_values[:10]}")
-
-        print(f"\nSUMMARY:")
-        print(f"  Total weights analyzed: {total_weights:,}")
-        print(f"  Total overflow values: {total_overflow:,}")
-        print(f"  Overflow percentage: {(total_overflow / total_weights) * 100:.4f}%")
-
     else:
         print("✓ NO OVERFLOW ISSUES FOUND!")
-        print(f"  All {total_weights:,} weight values fit within FP16 range")
+        print(f"  All {total_weights:,} weight values fit within FP16 range or are FP32")
 
     print("\n" + "=" * 80)
     return overflow_layers
-
-def test_fp16_conversion(model):
-    """
-    Test actual conversion to FP16 and measure differences.
-    """
-    print("\n" + "=" * 80)
-    print("TESTING FP16 CONVERSION")
-    print("=" * 80)
-
-    for layer in model.layers:
-        weights = layer.get_weights()
-        if not weights:
-            continue
-
-        try:
-            # Try converting to FP16
-            weights_fp16 = [w.astype(np.float16) for w in weights]
-
-            # Check for inf/nan after conversion
-            for i, (w_orig, w_fp16) in enumerate(zip(weights, weights_fp16)):
-                inf_count = np.sum(np.isinf(w_fp16))
-                nan_count = np.sum(np.isnan(w_fp16))
-
-                if inf_count > 0 or nan_count > 0:
-                    print(f"❌ Layer: {layer.name}, Weight {i}")
-                    print(f"   Shape: {w_orig.shape}")
-                    print(f"   Original range: [{np.min(w_orig):.2e}, {np.max(w_orig):.2e}]")
-                    print(f"   FP16 Inf count: {inf_count}")
-                    print(f"   FP16 NaN count: {nan_count}")
-                    print()
-        except Exception as e:
-            print(f"❌ Error converting layer {layer.name}: {e}")
-
-    print("=" * 80)
-
