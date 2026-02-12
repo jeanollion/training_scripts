@@ -17,14 +17,14 @@ from dataset_iterator.nonvoid_iterator import NonVoidIterator
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 from dataset_iterator.keras_callbacks import EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint, \
     LogLRCallback
-from pix_mclass.callbacks import ScheduledGradientCallback, ScheduledDropoutCallback, CosineDecayResume
+from pix_mclass.callbacks import CosineDecayResume
 from pix_mclass.unet import get_model
 from pix_mclass.utils import ensure_multiplicity
 from pix_mclass.losses import get_class_counts, get_weighted_sparse_categorical_crossentropy, \
     get_weighted_sparse_categorical_tempered_focal_loss
 import pix_mclass.training as pmt
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info, check_requirements, \
-    compare_versions, print_requirement_error
+    compare_versions, print_requirement_error, export_fp16_model
 
 __VERSION__ = "1.1.4"
 __REQUIRES__ = ["dataset_iterator>=0.5.6", "PixMClass>=0.1.5" ]
@@ -44,6 +44,7 @@ parser.add_argument("--min_learning_rate", type=float, help="minimal learning ra
 parser.add_argument("--strategy", default="", type=str, help="distributed training strategy: multiworker-slurm or mirrored. Leave empty for default behaviour (single replica)")
 parser.add_argument("--min_script_version", type=str, help="minimal script version")
 parser.add_argument("--mixed_precision", action="store_true", help="Mixed Precision (float16) training")
+parser.add_argument("--export_fp16", action="store_true", help="Export to float16 Precision")
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -171,7 +172,10 @@ if __name__ == "__main__":
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
         model.load_weights(WEIGHT_PATH)
         # export model
-        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True) # TODO export in FP16
+        if args.export_fp16:
+            export_fp16_model(model, SAVED_MODEL_PATH)
+        else:
+            model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
         print("model saved", flush=True)
     else:
         print(f"init iterator...", flush=True)
@@ -292,8 +296,6 @@ if __name__ == "__main__":
             ton_cb = tf.keras.callbacks.TerminateOnNaN()
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=0)
             callbacks = [LogLRCallback(), checkpoint, log_cb, ton_cb]
-            callbacks.append( ScheduledDropoutCallback(N_EPOCHS))
-            callbacks.append(ScheduledGradientCallback(N_EPOCHS))
             if EPSILON_RANGE[1]!=EPSILON_RANGE[0]:
                 eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
                 callbacks.append(eps_schedule)
@@ -339,30 +341,33 @@ if __name__ == "__main__":
             if val_it is not None:
                 val_it.close()
             if not args.train_only: # export model
-                model.load_weights(WEIGHT_PATH) # reload best weights
                 print("saving model...", flush=True)
                 if args.strategy == "multiworker-slurm":
                     is_chief = (
                         cluster_resolver.task_type == "worker"
                         and cluster_resolver.task_id == 0
                     )
-
+                    if is_chief:
+                        model.load_weights(WEIGHT_PATH)  # reload best weights
                     save_path = (
                         SAVED_MODEL_PATH
                         if is_chief
                         else SAVED_MODEL_PATH + "_tmp_" + os.environ.get("SLURM_PROCID", "")
                     )
+                    if args.export_fp16:
+                        export_fp16_model(model, SAVED_MODEL_PATH)
+                    else:
+                        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
 
-                    model.save(
-                        save_path,
-                        include_optimizer=False,
-                        save_traces=True,
-                    )
                     print("model saved", flush=True)
 
                     if not is_chief:
                         print(f"cleaning temp models at {save_path}", flush=True)
                         shutil.rmtree(save_path)  # clean up for non chief worker
                 else:
-                    model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
+                    model.load_weights(WEIGHT_PATH)  # reload best weights
+                    if args.export_fp16:
+                        export_fp16_model(model, SAVED_MODEL_PATH)
+                    else:
+                        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
                     print("model saved", flush=True)

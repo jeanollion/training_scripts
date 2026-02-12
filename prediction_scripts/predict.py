@@ -1,5 +1,4 @@
 import tensorflow as tf
-from tensorflow.keras import mixed_precision
 import json
 import h5py
 import time
@@ -29,14 +28,11 @@ def shape_to_list(shape):
         return "None"
 
 
-def load_model(precision='float32'):
+def load_model():
     set_gpu_options()
 
     model_path = "/model"
     print("Loading model...")
-
-    if precision == 'float16':
-        mixed_precision.set_global_policy('mixed_float16')
     model = tf.keras.models.load_model(model_path, compile=False)
 
     # Compile with XLA
@@ -63,14 +59,10 @@ def load_model(precision='float32'):
         json.dump(specs, file)
     os.remove("/data/model_specs.lock")
 
-    print(f"\n{'=' * 60}")
-    print(f"Model loaded with precision: {precision}")
-    print(f"{'=' * 60}\n")
-
-    return model, precision
+    return model
 
 
-def make_prediction(model, input_path, precision):
+def make_prediction(model, input_path):
     print(f"make prediction on input path: {input_path}", flush=True)
     if model is None:
         raise Exception("Model not loaded.")
@@ -89,7 +81,7 @@ def make_prediction(model, input_path, precision):
         outputs = [out.numpy() if not isinstance(out, np.ndarray) else out for out in outputs]
         #print(f"output dtype: {[o.dtype for o in outputs]}")
         #print(f"output shape: {[o.shape for o in outputs]}")
-        outputs = [out.astype(np.float32) for out in outputs] # TODO dump float16 as short
+        outputs = [out.astype(np.float32) for out in outputs]
         t2 = time.time()
         print(f"transfer & conversion took: {t2 - t1:.4f}s", flush=True)
         for p in paths:
@@ -101,9 +93,9 @@ def make_prediction(model, input_path, precision):
     os.rename(input_path, input_path.replace("inputs", "outputs"))
 
 
-def scan(precision):
+def scan():
     try:
-        model, precision = load_model(precision)
+        model = load_model()
     except Exception as e:
         error = join("/data", "load_model.error")
         with open(error, mode='w') as error_file:
@@ -117,7 +109,7 @@ def scan(precision):
         inputs = [f for f in inputs if not f.endswith("lock") and f.replace("h5", "lock") not in inputs]
         for f in inputs:
             try:
-                make_prediction(model, join("/data", f), precision)
+                make_prediction(model, join("/data", f))
             except Exception as e:
                 error = join("/data", f.replace("h5", "error"))
                 with open(error, mode='w') as error_file:
@@ -127,9 +119,4 @@ def scan(precision):
 
 
 if __name__ == "__main__":
-    precision = os.environ.get('PRECISION', 'float32')
-    if precision not in ['float16', 'float32']:
-        precision = 'float32'
-
-    print(f"Starting prediction service with precision: {precision}\n")
-    scan(precision)
+    scan()

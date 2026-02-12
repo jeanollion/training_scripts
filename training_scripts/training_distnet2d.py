@@ -29,7 +29,7 @@ from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
 from distnet_2d.utils.callbacks import ClassWeightScheduler, GradientMonitorCallback, EpsilonCosineDecayCallback, \
-    CosineDecayResume, ScheduledDropoutCallback, ScheduledGradientCallback, LogGradientCallback
+    CosineDecayResume, LogGradientCallback
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
@@ -56,6 +56,7 @@ parser.add_argument("--min_learning_rate", type=float, help="minimal learning ra
 parser.add_argument("--strategy",default="",type=str,help="distributed training strategy: multiworker-slurm or mirrored. Leave empty for default behaviour (single replica)")
 parser.add_argument("--min_script_version", type=str, help="minimal script version")
 parser.add_argument("--mixed_precision", action="store_true", help="Mixed Precision (float16) training")
+parser.add_argument("--export_fp16", action="store_true", help="Export to float16 Precision")
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -230,19 +231,21 @@ if __name__ == "__main__":
         nchan, nlabel = get_input_channel_and_label(config)
         n_inputs = nchan + nlabel * 2 # for each label EDM and GDCM are added
         tracking_args = config.get("tracking", {})
-        if training and tracking and tracking_args.get("balance_lm_frequency", True):
-            link_multiplicity_class_weights = get_link_multiplicity_class_weights(config,  max_weight=50, power_law = tracking_args.get("balance_lm_frequency_parameters", {}).get("weight_power_law", 1))
+        lm_loss_params = tracking_args.get("lm_loss_parameters", {})
+        if training and tracking and lm_loss_params.get("weight_power_law", 1)>0:
+            link_multiplicity_class_weights = get_link_multiplicity_class_weights(config,  max_weight=50, power_law = lm_loss_params.get("weight_power_law", 1))
             print(f"link multiplicity weights: { {l:w for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
         else:
             link_multiplicity_class_weights = [1, 1, 1]
+        lm_focal_weight = lm_loss_params.get("focal_weight", 1)
         category_number = arch_args.get("category_number", 0)
-        if training and category_number > 1 and seg_args.get("balance_category_frequency", True):
+        cat_loss_params = seg_args.get("category_loss_parameters", {})
+        if training and category_number > 1 and cat_loss_params.get("weight_power_law", 1)>0:
             category_class_counts = get_category_class_counts(config, category_number, category_keyword=ARRAY_KEYWORDS[1])
-            category_class_weights = compute_category_weights(category_class_counts, power_law=seg_args.get("balance_category_frequency_parameters", {}).get("weight_power_law", 1))
-            category_focal_weight = 2.0 # TODO argument
+            category_class_weights = compute_category_weights(category_class_counts, power_law=cat_loss_params.get("weight_power_law", 1))
         else:
-            category_focal_weight = 2.0
             category_class_weights = [1] * category_number
+        category_focal_weight = cat_loss_params.get("focal_weight", 2)
         balance_edm_weight = "balance_edm_frequency_parameters" in seg_args
         edm_class_weights = get_edm_class_weights(config, power_law = seg_args["balance_edm_frequency_parameters"].get("weight_power_law", 1)) if training and balance_edm_weight else None
         if edm_class_weights is not None:
@@ -262,7 +265,7 @@ if __name__ == "__main__":
                                   accum_steps=1, edm_class_weights=edm_class_weights,
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
-                                  link_multiplicity_class_weights=link_multiplicity_class_weights,
+                                  link_multiplicity_class_weights=link_multiplicity_class_weights, link_multiplicity_focal_weight=lm_focal_weight,
                                   category_class_weights=category_class_weights, category_focal_weight = category_focal_weight,
                                   perform_test_step=perform_test_step, scale_losses = not legacy)
         model = make_model()
@@ -370,9 +373,9 @@ if __name__ == "__main__":
 
 
     if args.export_only:
-        print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})", flush=True)
+        print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)}) fp16: {args.export_fp16}", flush=True)
         model = init_model(False)
-        if args.mixed_precision:
+        if args.export_fp16:
             export_fp16_model(model, SAVED_MODEL_PATH)
         else:
             model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
@@ -551,8 +554,6 @@ if __name__ == "__main__":
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
             tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
             callbacks = [LogLRCallback(), checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
-            callbacks.append(ScheduledDropoutCallback(N_EPOCHS)) # TODO for re-training: add option to disable the callback
-            callbacks.append(ScheduledGradientCallback(N_EPOCHS))  # TODO for re-training: add option to disable the callback
             callbacks.append(LogGradientCallback(STEP_NUMBER))
             if MIN_EPSILON<EPSILON:
                 eps_cb = EpsilonCosineDecayCallback(start_epsilon=EPSILON, min_epsilon=MIN_EPSILON, decay_steps=STEP_NUMBER * WARMUP_EPOCHS)
@@ -568,14 +569,6 @@ if __name__ == "__main__":
                 if freq_param.get("dynamic_weights", True):
                     callbacks.append(ClassWeightScheduler(attribute_name = "edm_class_weights", n_epochs=N_EPOCHS, power_law = freq_param.get("dynamic_power_law", 1)))
             category_number = config["model_architecture"].get("category_number", 0)
-            if category_number > 1 and "balance_category_frequency_parameters" in config.get("segmentation", {}):
-                freq_param = config["segmentation"]["balance_category_frequency_parameters"]
-                if freq_param.get("dynamic_weights", True):
-                    callbacks.append(ClassWeightScheduler(attribute_name="category_class_weights", n_epochs=N_EPOCHS, power_law=freq_param.get("dynamic_power_law", 1)))
-            if "balance_lm_frequency_parameters" in config.get("tracking", {}):
-                freq_param = config["tracking"]["balance_lm_frequency_parameters"]
-                if freq_param.get("dynamic_weights", True):
-                    callbacks.append(ClassWeightScheduler(attribute_name="link_multiplicity_class_weights", n_epochs=N_EPOCHS, power_law = freq_param.get("dynamic_power_law", 1)))
 
             hard_sample_mining_param = t_p.get("hard_sample_mining", None)
             if hard_sample_mining_param is not None:
@@ -656,7 +649,9 @@ if __name__ == "__main__":
                         if is_chief
                         else SAVED_MODEL_PATH + "_tmp_" + os.environ.get("SLURM_PROCID", "")
                     )
-                    if args.mixed_precision:
+                    if is_chief:
+                        model.load_weights(WEIGHT_PATH)  # reload best weights
+                    if args.export_fp16:
                         export_fp16_model(model, save_path)
                     else:
                         model.save(
@@ -665,15 +660,16 @@ if __name__ == "__main__":
                             save_traces=True,
                             inference=True,
                         )
-                    print("model saved", flush=True)
+                    print(f"model saved. fp16: {args.export_fp16}", flush=True)
 
                     if not is_chief:
                         print(f"cleaning temp models at {save_path}", flush=True)
                         shutil.rmtree(save_path)  # clean up for non chief worker
                 else:
-                    if args.mixed_precision:
+                    model.load_weights(WEIGHT_PATH)  # reload best weights
+                    if args.export_fp16:
                         export_fp16_model(model, SAVED_MODEL_PATH)
                     else:
                         model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
-                    print("model saved", flush=True)
+                    print(f"model saved. fp16: {args.export_fp16}", flush=True)
 

@@ -376,8 +376,8 @@ def print_requirement_error():
 def _clone_function(layer):
     config = layer.get_config()
     config.pop('output_dtype', None)
-    if isinstance(layer, (tf.keras.layers.BatchNormalization, tf.keras.layers.LayerNormalization, tf.keras.layers.Softmax)):
-        # Keep these in float32 for numerical stability
+    force_fp32 = isinstance(layer, (tf.keras.layers.BatchNormalization, tf.keras.layers.LayerNormalization, tf.keras.layers.Softmax))
+    if force_fp32: # Keep these in float32 for numerical stability. not that this doesn't affect sub-layers
         config['dtype'] = 'float32'
     else:
         config['dtype'] = 'float16'
@@ -428,7 +428,6 @@ def transfer_weights_recursive(source_layer, target_layer):
         except ValueError as e:
             print(f"Error in {source_layer.name}: {e}")
     else:
-        #print( f"setting weights for layer: {source_layer.name} ({type(target_layer)}) dtype: {target_layer.variable_dtype} x {target_layer.compute_dtype}")
         for name, target_sublayer in target_children.items():
             if name not in source_children:
                 if target_sublayer.get_weights():
