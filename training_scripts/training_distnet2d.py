@@ -109,8 +109,10 @@ if __name__ == "__main__":
         arch_params = config["model_architecture"]
         category_number = arch_params.get("category_number", 0)
         channel_names = ds_conf.get("channel_name", "raw")
-        default_frame_aware = config["model_architecture"]["architecture_type"].lower() == "tema" or config["model_architecture"]["architecture_type"].lower() == "tempy"
+        default_frame_aware = config["model_architecture"]["architecture_type"].lower() == "tempy" # TODO change this mechanism
         frame_aware = arch_params.get("frame_aware", default_frame_aware)
+        if arch_params["frame_window"] == 0:
+            frame_aware = False
         if not isinstance(channel_names, (list, tuple)):
             channel_names = [channel_names]
         elif isinstance(channel_names, tuple):
@@ -399,8 +401,7 @@ if __name__ == "__main__":
             root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
             arch_params = config["model_architecture"]
-            default_frame_aware = arch_params["architecture_type"].lower() == "tema" or arch_params[
-                "architecture_type"].lower() == "tempy"
+            default_frame_aware = arch_params["architecture_type"].lower() == "tempy" # TODO change this mechanism
             frame_aware = arch_params.get("frame_aware", default_frame_aware)
             if arch_params["frame_window"] == 0:
                 frame_aware = False
