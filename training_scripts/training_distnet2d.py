@@ -458,7 +458,7 @@ if __name__ == "__main__":
                 inputs = [np.transpose(inputs, transpose_axis)]
                 input_names = cnames
             if len(outputs)>0:
-                if len(output_name) > 1:
+                if len(output_name) > 1 or isinstance(outputs[0], (list, tuple)):
                     outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
                     outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
                 else:
