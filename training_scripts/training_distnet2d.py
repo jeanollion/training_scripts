@@ -264,7 +264,8 @@ if __name__ == "__main__":
 
         def make_model(legacy:bool=False):
             return get_distnet_2d(arch=arch,
-                                  accum_steps=1, edm_class_weights=edm_class_weights,
+                                  gradient_accumulation_steps = config["training_parameters"].get("gradient_accumulation_steps", 1),
+                                  edm_class_weights=edm_class_weights,
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights, link_multiplicity_focal_weight=lm_focal_weight,
