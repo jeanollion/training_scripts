@@ -579,3 +579,15 @@ def analyze_weight_overflow(model, threshold=65504.0):
 
     print("\n" + "=" * 80)
     return overflow_layers
+
+
+def dump_layer_config(layer, indent=0):
+    out = {"name": layer.name, "class": layer.__class__.__name__}
+    try:
+        out["config"] = layer.get_config()
+    except Exception as e:
+        out["config_error"] = str(e)
+    sublayers = getattr(layer, "_layers", None) or getattr(layer, "layers", None) or []
+    if sublayers:
+        out["sublayers"] = [dump_layer_config(s) for s in sublayers if hasattr(s, "name")]
+    return out

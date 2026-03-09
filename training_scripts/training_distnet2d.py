@@ -1,6 +1,6 @@
 import argparse
 import math
-import os, sys
+import os, sys, json
 import shutil
 import platform
 import random
@@ -37,6 +37,17 @@ from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_i
     print_requirement_error, compare_versions, reinitialize_weights, export_fp16_model, \
     compute_category_keep_probabilities
 
+DETERMINISTIC_MODE = True # for testing purposes
+if DETERMINISTIC_MODE:
+    import random
+    SEED = int(os.environ.get("TRAIN_SEED", "42"))
+    os.environ["PYTHONHASHSEED"] = str(SEED)
+    random.seed(SEED)
+    np.random.seed(SEED)
+    tf.random.set_seed(SEED)
+    tf.keras.utils.set_random_seed(SEED)
+    random.seed(42)
+
 __VERSION__ = '1.1.6'
 __REQUIRES__ = ["dataset_iterator>=0.5.8", "distnet2d>=0.2.5" ]
 
@@ -69,6 +80,15 @@ if __name__ == "__main__":
             print(f"script version is out-of-date: {__VERSION__} minimal version: {args.min_script_version}", flush=True)
             print_requirement_error()
             sys.exit(1)
+
+    if DETERMINISTIC_MODE: # for debugging purposes
+        import subprocess
+        try:
+            h = subprocess.check_output(["cat", "HEAD"], cwd="/distnet2d/.git", stderr=subprocess.DEVNULL).decode().strip()
+            print(f"distnet2d commit: {h}")
+        except Exception as e:
+            print(f"distnet2d commit: unknown ({e})")
+
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}  tensorflow : {tf.__version__} python: {platform.python_version()}")
     if args.mixed_precision:
         mixed_precision.set_global_policy('mixed_float16')
@@ -321,6 +341,11 @@ if __name__ == "__main__":
                     model.load_weights(LOAD_WEIGHT_PATH)
             print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
             #print(f"model loss scales: {model.loss_scales}")
+
+        #from training_core import dump_layer_config
+        #with open(os.path.join(args.config_dir, "model_config.json"), "w") as f:
+        #    json.dump(dump_layer_config(model), f, indent=2, default=str)
+
         return model
 
 
