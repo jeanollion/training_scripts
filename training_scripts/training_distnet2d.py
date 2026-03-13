@@ -542,9 +542,9 @@ if __name__ == "__main__":
             with strategy.scope():
                 model = init_model(training=True)
                 learning_rate = CosineDecayResume(initial_learning_rate=LR,
+                                            min_lr=MIN_LR,
                                             decay_steps=STEP_NUMBER * N_EPOCHS,
                                             start_step = STEP_NUMBER * START_EPOCH,
-                                            alpha=float(MIN_LR) / float(LR),
                                             warmup_learning_rate_factor=1./10,
                                             warmup_steps = STEP_NUMBER * WARMUP_EPOCHS)
                 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate, epsilon=EPSILON))
