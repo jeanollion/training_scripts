@@ -12,4 +12,9 @@ RUN pip install SharedArray
 RUN pip install dill
 RUN pip install h5py
 RUN pip install https://github.com/gvtulder/elasticdeform/archive/refs/tags/v0.5.1.tar.gz # compatibility with numpy 2.x
-RUN apt install -y --no-install-recommends libcudnn9-cuda-12 && rm -rf /var/lib/apt/lists/* # wrong cudnn version in the image
+# wrong cudnn version in the image
+#RUN apt install -y --no-install-recommends libcudnn9-cuda-12 && rm -rf /var/lib/apt/lists/*
+# Add NVIDIA CUDA repository explicitly
+RUN wget --no-check-certificate https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/./libcudnn9-cuda-12_9.19.0.56-1_amd64.deb -O /tmp/libcudnn.deb && \
+    dpkg -i /tmp/libcudnn.deb && \
+    rm /tmp/libcudnn.deb
