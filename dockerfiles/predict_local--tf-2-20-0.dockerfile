@@ -1,5 +1,5 @@
-FROM tensorflow/tensorflow:2.18.0-gpu
-RUN pip install tf-keras==2.18.0
+FROM tensorflow/tensorflow:2.20.0-gpu
+RUN pip install tf-keras==2.20.0
 RUN apt-get clean && apt-get update
 RUN apt-get -y install wget
 # wrong cudnn version in the image

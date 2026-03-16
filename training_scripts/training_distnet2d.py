@@ -36,8 +36,8 @@ from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_i
     get_shm_info, get_input_channel_and_label, get_category_class_counts, compute_category_weights, check_requirements, \
     print_requirement_error, compare_versions, reinitialize_weights, export_fp16_model
 
-__VERSION__ = '1.1.5'
-__REQUIRES__ = ["dataset_iterator>=0.5.6", "distnet2d>=0.2.3" ]
+__VERSION__ = '1.1.6'
+__REQUIRES__ = ["dataset_iterator>=0.5.8", "distnet2d>=0.2.5" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -219,7 +219,7 @@ if __name__ == "__main__":
                 counts[1] += m
                 counts[2] += n
             dataset.close()
-        print(f"link multiplicity counts: {counts}")
+        print(f"link multiplicity counts: {[int(x) for x in counts]}")
         return compute_category_weights(counts, max_weight=max_weight, power_law = power_law)
 
 
@@ -236,7 +236,7 @@ if __name__ == "__main__":
         lm_loss_params = tracking_args.get("lm_loss_parameters", {})
         if training and tracking and lm_loss_params.get("weight_power_law", 1)>0:
             link_multiplicity_class_weights = get_link_multiplicity_class_weights(config,  max_weight=50, power_law = lm_loss_params.get("weight_power_law", 1))
-            print(f"link multiplicity weights: { {l:w for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
+            print(f"link multiplicity weights: { {l:float(w) for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
         else:
             link_multiplicity_class_weights = [1, 1, 1]
         lm_focal_weight = lm_loss_params.get("focal_weight", 1)
@@ -300,7 +300,7 @@ if __name__ == "__main__":
                     model = make_model(True)
                     model.load_weights(LOAD_WEIGHT_PATH)
             print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
-            print(f"model loss scales: {model.loss_scales}")
+            #print(f"model loss scales: {model.loss_scales}")
         return model
 
 
@@ -369,7 +369,7 @@ if __name__ == "__main__":
             enq.stop()
             del enq
             mean_losses = [np.mean(acc_losses[k]) for k in losses_names]
-            print(f"loss scales init values: {mean_losses}", flush=True)
+            print(f"loss scales init values: {[float(m) for m in mean_losses]}", flush=True)
         else:
             mean_losses = [1] * len(losses_names)
         model.loss_scales.assign(mean_losses)

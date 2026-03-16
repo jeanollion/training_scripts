@@ -26,8 +26,8 @@ import pix_mclass.training as pmt
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info, check_requirements, \
     compare_versions, print_requirement_error, export_fp16_model
 
-__VERSION__ = "1.1.4"
-__REQUIRES__ = ["dataset_iterator>=0.5.6", "PixMClass>=0.1.5" ]
+__VERSION__ = "1.1.5"
+__REQUIRES__ = ["dataset_iterator>=0.5.8", "PixMClass>=0.1.6" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
