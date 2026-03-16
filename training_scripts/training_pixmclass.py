@@ -9,22 +9,25 @@ import numpy as np
 import tensorflow as tf
 import h5py
 from importlib.metadata import version
-
+from tensorflow.keras import mixed_precision
 from dataset_iterator.validation_callback import ValidationCallback
 from dataset_iterator.image_data_generator import get_image_data_generator
 from dataset_iterator.datasetIO import MemoryIO
 from dataset_iterator.nonvoid_iterator import NonVoidIterator
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
-from dataset_iterator.keras_callbacks import EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint
+from dataset_iterator.keras_callbacks import EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint, \
+    LogLRCallback
+from pix_mclass.callbacks import CosineDecayResume
 from pix_mclass.unet import get_model
 from pix_mclass.utils import ensure_multiplicity
-from pix_mclass.losses import get_class_weights, weighted_sparse_categorical_crossentropy
+from pix_mclass.losses import get_class_counts, get_weighted_sparse_categorical_crossentropy, \
+    get_weighted_sparse_categorical_tempered_focal_loss
 import pix_mclass.training as pmt
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info, check_requirements, \
-    compare_versions, print_requirement_error
+    compare_versions, print_requirement_error, export_fp16_model
 
-__VERSION__ = "1.1.8"
-__REQUIRES__ = ["dataset_iterator>=0.5.7", "PixMClass>=0.1.5" ]
+__VERSION__ = "1.1.5"
+__REQUIRES__ = ["dataset_iterator>=0.5.8", "PixMClass>=0.1.6" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -40,6 +43,8 @@ parser.add_argument("--learning_rate", type=float, help="initial learning rate f
 parser.add_argument("--min_learning_rate", type=float, help="minimal learning rate for training")
 parser.add_argument("--strategy", default="", type=str, help="distributed training strategy: multiworker-slurm or mirrored. Leave empty for default behaviour (single replica)")
 parser.add_argument("--min_script_version", type=str, help="minimal script version")
+parser.add_argument("--mixed_precision", action="store_true", help="Mixed Precision (float16) training")
+parser.add_argument("--export_fp16", action="store_true", help="Export to float16 Precision")
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -53,7 +58,9 @@ if __name__ == "__main__":
             print_requirement_error()
             sys.exit(1)
     print( f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; PixMClass version: {version('PixMClass')}")
-
+    if args.mixed_precision:
+        mixed_precision.set_global_policy('mixed_float16')
+        print(f"Mixed precision policy= {mixed_precision.global_policy()}")
     # get parameters
     config = open_config_file(args.config_dir, args.test_data_augmentation)
     t_p = config["training_parameters"]
@@ -63,6 +70,7 @@ if __name__ == "__main__":
     LOG_PATH = os.path.join(args.config_dir, model_name )
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
+    WARMUP_EPOCHS = max(2, int(N_EPOCHS / 50))
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
     VAL_STEP_NUMBER = t_p.get("validation_step_number", 100)
     VAL_FREQ = validation_freq=t_p.get("validation_frequency", 1)
@@ -93,16 +101,14 @@ if __name__ == "__main__":
         else:
             memory_persistent = isinstance(dataset, MemoryIO)
         if dataset_type=="TRAIN":
-            weights = get_class_weights(dataset, classes_name) # inverse frequency
-            weight_limit = ds_conf.get("max_loss_weight", ds_conf.get("loss_weight_range", [None, None])[1])
-            if weight_limit is not None:
-                weights = np.minimum(weights, weight_limit)
+            class_counts, bck_count = get_class_counts(dataset, classes_name)
         scaling_parameters = data_aug_params.get("scaling_parameters", None)
         if scaling_parameters is not None:
             scaling_parameters = ensure_multiplicity(len(channel_names), scaling_parameters)
             for i, sp in enumerate(scaling_parameters):
                 sp["dataset"] = dataset
                 sp["channel_name"] = channel_names[i]
+                sp["group_keyword"] = ds_conf.get("keyword", None)
         else:
             scaling_parameters = [{}]*len(channel_names)
         scaling_data_generators = [get_image_data_generator(scaling_parameters=scaling_parameters[i]) for i in range(len(channel_names))]
@@ -125,7 +131,7 @@ if __name__ == "__main__":
             min_annotated_pixel_number = ds_conf.get("min_annotated_pixel_number", 0)
             if min_annotated_pixel_number > 0:
                 it = NonVoidIterator(it, 0, False, pix_thld=min_annotated_pixel_number)
-            return it, weights
+            return it, class_counts, bck_count
         else:
             return it
 
@@ -166,26 +172,35 @@ if __name__ == "__main__":
         assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
         model.load_weights(WEIGHT_PATH)
         # export model
-        tf.saved_model.save(model, SAVED_MODEL_PATH)
+        if args.export_fp16:
+            export_fp16_model(model, SAVED_MODEL_PATH)
+        else:
+            model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
         print("model saved", flush=True)
     else:
         print(f"init iterator...", flush=True)
-        train_it, weight_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TRAIN")
+        train_it, class_count_list, bck_count_list = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TRAIN")
 
-        if len(weight_list) > 1:
+        if len(class_count_list) > 1:
             # weighted sum of weights
-            weights = np.zeros_like(weight_list[0])
-            tot = 0
-            for it, w in zip(train_it.iterators, weight_list):
-                l = it.get_sample_number() # usually differs from len(it)
-                tot += l
-                weights += w * l
-            weights /= tot
+            class_counts = np.stack(class_count_list, 0)
+            class_counts = np.sum(class_counts, axis=0, keepdims=False)
         else:
-            weights = weight_list[0]
+            class_counts = class_count_list[0]
+        class_counts = np.maximum(class_counts, 1)
         n_classes = arch_conf.get("n_classes", 3)
-        assert n_classes == weights.shape[0], f"dataset contains {weights.shape[0]} class, but model expects {n_classes} classes"
-        print(f"Class weights: {weights}", flush=True)
+        assert n_classes == class_counts.shape[0], f"dataset contains {class_counts.shape[0]} class, but model expects {n_classes} classes"
+
+        loss_parameters =  config["training_parameters"].get("category_loss_parameters", {"weight_power_law":1, "focal_weight":0, "focal_weight_power_law": 0})
+        inv_freq = np.mean(class_counts) / class_counts
+        weights = np.power(inv_freq, loss_parameters.get("weight_power_law", 1))
+
+        # annotation sparseness
+        bck_count = np.sum(bck_count_list)
+        fore_count = np.sum(class_counts)
+        annotated_pix = float(fore_count) / float(bck_count + fore_count)
+        lr_factor = (1 + annotated_pix) / 2
+        print(f"Class counts: {class_counts}, class weights: {weights} annotated pixels: {annotated_pix * 100:.3}% corrected LR: {LR / lr_factor}", flush=True)
 
         if args.test_data_augmentation:
             test_param = config.get("test_data_augmentation_parameters", {})
@@ -261,21 +276,26 @@ if __name__ == "__main__":
 
             # init model
             print("init model...", flush=True)
-            if args.strategy != "":
-                loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32", reduction=tf.losses.Reduction.NONE) 
-            else:
-                loss = weighted_sparse_categorical_crossentropy(weights, dtype="float32")
+            loss_kwargs = {'reduction' : tf.losses.Reduction.NONE} if args.strategy != "" else {}
+            #loss = get_weighted_sparse_categorical_crossentropy(weights, dtype="float32", **loss_kwargs)
+            loss = get_weighted_sparse_categorical_tempered_focal_loss(weights, dtype="float32", temperature=loss_parameters.get("temperature", 1), label_smoothing=loss_parameters.get("label_smoothing", 0), focal_weight=loss_parameters.get("focal_weight", 0), **loss_kwargs)
 
             with strategy.scope():
                 model = init_model(**arch_conf)
-                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]), loss=loss)
+                corrected_lr = LR/lr_factor
+                learning_rate = CosineDecayResume(initial_learning_rate=corrected_lr,
+                                                  decay_steps=STEP_NUMBER * N_EPOCHS,
+                                                  start_step=STEP_NUMBER * START_EPOCH,
+                                                  alpha=float(MIN_LR) / float(corrected_lr),
+                                                  warmup_learning_rate_factor=1. / 10,
+                                                  warmup_steps=STEP_NUMBER * WARMUP_EPOCHS)
+                model.compile(optimizer=tf.keras.optimizers.Adam(LR/lr_factor, epsilon=EPSILON_RANGE[0]), loss=loss)
 
             # perform training
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=True, save_weights_only=True)
-            lr_schedule = tf.keras.callbacks.ReduceLROnPlateau(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss')
             ton_cb = tf.keras.callbacks.TerminateOnNaN()
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=0)
-            callbacks = [checkpoint, lr_schedule, log_cb, ton_cb]
+            callbacks = [LogLRCallback(), checkpoint, log_cb, ton_cb]
             if EPSILON_RANGE[1]!=EPSILON_RANGE[0]:
                 eps_schedule = EpsilonCosineDecayCallback(decay_steps=N_EPOCHS * STEP_NUMBER, start_epsilon=EPSILON_RANGE[0],  min_epsilon=EPSILON_RANGE[1], start_step=START_EPOCH * STEP_NUMBER, verbose=1)
                 callbacks.append(eps_schedule)
@@ -292,15 +312,16 @@ if __name__ == "__main__":
                     shm = get_shm_info(verbose=2)
                     if shm is not None and shm[2] < 1:
                         print(f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", flush=True)
+                    #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
                     enq = OrderedEnqueuerCF(train_it, shuffle=True) #, name="train_gen"
                     if val_it is not None:
                         val_enq = OrderedEnqueuerCF(val_it, shuffle=False) #, name="test_gen"
                         val_cb.set_enqueuer(val_enq, enq)
-                        val_enq.start(workers=WORKERS, max_queue_size=max(3, min(VAL_STEP_NUMBER - 1, WORKERS)))
+                        val_enq.start(workers=WORKERS, max_queue_size=max(3, min(VAL_STEP_NUMBER, WORKERS)))
                         val_gen = val_enq.get(block=False, name="val")
                     else:
                         val_gen = None
-                    enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER - 1, WORKERS)))
+                    enq.start(workers=WORKERS, max_queue_size=max(3, min(STEP_NUMBER, WORKERS)))
                     gen = enq.get()
                 else:
                     gen = train_it
@@ -326,27 +347,27 @@ if __name__ == "__main__":
                         cluster_resolver.task_type == "worker"
                         and cluster_resolver.task_id == 0
                     )
-
+                    if is_chief:
+                        model.load_weights(WEIGHT_PATH)  # reload best weights
                     save_path = (
                         SAVED_MODEL_PATH
                         if is_chief
                         else SAVED_MODEL_PATH + "_tmp_" + os.environ.get("SLURM_PROCID", "")
                     )
+                    if args.export_fp16:
+                        export_fp16_model(model, SAVED_MODEL_PATH)
+                    else:
+                        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
 
-                    model.save(
-                        save_path,
-                        include_optimizer=False,
-                        save_traces=True,
-                    )
                     print("model saved", flush=True)
 
                     if not is_chief:
                         print(f"cleaning temp models at {save_path}", flush=True)
                         shutil.rmtree(save_path)  # clean up for non chief worker
                 else:
-                    model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
-                    # model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+                    model.load_weights(WEIGHT_PATH)  # reload best weights
+                    if args.export_fp16:
+                        export_fp16_model(model, SAVED_MODEL_PATH)
+                    else:
+                        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True)
                     print("model saved", flush=True)
-                    # print("saving model...", flush=True)
-                    # tf.saved_model.save(model, SAVED_MODEL_PATH)
-                    # print("model saved", flush=True)

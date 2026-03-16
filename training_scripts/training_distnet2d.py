@@ -1,15 +1,18 @@
 import argparse
+import math
 import os, sys
 import shutil
 import platform
 import random
 import time
-from collections import defaultdict
-import numpy as np
-import tensorflow as tf
 import h5py
 import copy
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import mixed_precision
 from importlib.metadata import version
+
+from tensorflow.keras.optimizers.schedules import CosineDecay
 
 from dataset_iterator.validation_callback import ValidationCallback
 from dataset_iterator.image_data_generator import get_image_data_generator, data_generator_to_channel_postprocessing_fun
@@ -18,20 +21,23 @@ from dataset_iterator import extract_tile_random_zoom_function, ConcatIterator
 from dataset_iterator.utils import transpose_list
 from dataset_iterator.hard_sample_mining import HardSampleMiningCallback, compute_metrics
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
-from dataset_iterator.keras_callbacks import StopOnLR, EpsilonCosineDecayCallback, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2
+from dataset_iterator.keras_callbacks import StopOnLR, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2, \
+    LogLRCallback
 from distnet_2d.data import DyDxIterator
 from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
+from distnet_2d.utils.callbacks import ClassWeightScheduler, GradientMonitorCallback, EpsilonCosineDecayCallback, \
+    CosineDecayResume, LogGradientCallback
 from distnet_2d.utils.helpers import get_background_foreground_counts, count_links
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
-    get_shm_info, get_input_channel_and_label, get_category_class_weights, compute_category_weights, check_requirements, \
-    print_requirement_error, compare_versions
+    get_shm_info, get_input_channel_and_label, get_category_class_counts, compute_category_weights, check_requirements, \
+    print_requirement_error, compare_versions, reinitialize_weights, export_fp16_model
 
 __VERSION__ = '1.1.6'
-__REQUIRES__ = ["dataset_iterator>=0.5.7", "distnet2d>=0.2.4" ]
+__REQUIRES__ = ["dataset_iterator>=0.5.8", "distnet2d>=0.2.5" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -49,6 +55,8 @@ parser.add_argument("--learning_rate", type=float, help="initial learning rate f
 parser.add_argument("--min_learning_rate", type=float, help="minimal learning rate for training")
 parser.add_argument("--strategy",default="",type=str,help="distributed training strategy: multiworker-slurm or mirrored. Leave empty for default behaviour (single replica)")
 parser.add_argument("--min_script_version", type=str, help="minimal script version")
+parser.add_argument("--mixed_precision", action="store_true", help="Mixed Precision (float16) training")
+parser.add_argument("--export_fp16", action="store_true", help="Export to float16 Precision")
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -60,8 +68,10 @@ if __name__ == "__main__":
             print(f"script version is out-of-date: {__VERSION__} minimal version: {args.min_script_version}", flush=True)
             print_requirement_error()
             sys.exit(1)
-    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')} python: {platform.python_version()}")
-
+    print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}  tensorflow : {tf.__version__} python: {platform.python_version()}")
+    if args.mixed_precision:
+        mixed_precision.set_global_policy('mixed_float16')
+        print(f"Mixed precision policy= {mixed_precision.global_policy()}")
     RUN_TEST = args.test_data_augmentation or args.test_predict
     # get parameters
     config = open_config_file(args.config_dir, RUN_TEST)
@@ -72,14 +82,15 @@ if __name__ == "__main__":
     LOG_PATH = os.path.join(args.config_dir, model_name )
     SAVED_MODEL_PATH = os.path.join(args.export_dir if args.export_dir is not None else args.config_dir, model_name)
     N_EPOCHS = args.n_epochs if args.n_epochs is not None else t_p.get("n_epochs", 500)
+    WARMUP_EPOCHS = max(2, int(N_EPOCHS / 50))
     STEP_NUMBER = args.step_number if args.step_number is not None else t_p.get("step_number", 200)
     VAL_STEP_NUMBER = t_p.get("validation_step_number", 100)
     VAL_FREQ = t_p.get("validation_frequency", 1)
-    PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
+    PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 80)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
     MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
-    EPSILON = 1e-7
-
+    EPSILON = 1e-7 # trade-off: higher -> learns slower but stabilises (especially with FP16). keras default is 1e-7
+    MIN_EPSILON = 1e-7
     if args.strategy == "multiworker-slurm":
         WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
     else:
@@ -92,10 +103,16 @@ if __name__ == "__main__":
     def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
         data_aug_params = ds_conf.get("data_augmentation", {})
         seg_args = config.get("segmentation", {})
-        tracking = not seg_args.get("segment_only", False)
+        tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
+        segmentation = seg_args.get("segmentation", True)
+        print(f"segmentation: {segmentation} tracking: {tracking}")
         arch_params = config["model_architecture"]
         category_number = arch_params.get("category_number", 0)
         channel_names = ds_conf.get("channel_name", "raw")
+        default_frame_aware = config["model_architecture"]["architecture_type"].lower() == "tempy" # TODO change this mechanism
+        frame_aware = arch_params.get("frame_aware", default_frame_aware)
+        if arch_params["frame_window"] == 0:
+            frame_aware = False
         if not isinstance(channel_names, (list, tuple)):
             channel_names = [channel_names]
         elif isinstance(channel_names, tuple):
@@ -135,6 +152,7 @@ if __name__ == "__main__":
         for sp, cname in zip(scaling_parameters, channel_names):
             sp["dataset"] = dataset
             sp["channel_name"] = cname
+            sp["group_keyword"] = ds_conf.get("keyword", None)
         affine_transform_parameters = data_aug_params.get("affine_transform_parameters", None)
         data_generators = [get_image_data_generator(scaling_parameters=sp, affine_transform_parameters=affine_transform_parameters) for sp in scaling_parameters]
         affine_transform_parameters_mask = None if affine_transform_parameters is None else {**affine_transform_parameters, "interpolation_order": 0}
@@ -156,38 +174,41 @@ if __name__ == "__main__":
 
         pp_fun = chain_pp_fun(pp_fun_list)
         fw = arch_params["frame_window"]
+        if fw == 0:
+            frame_aware = False
         iterator_params = dict(erase_edge_cell_size=data_aug_params.get("erase_edge_cell_size", 0),
                                aug_remove_prob=data_aug_params.get("static_probability", 0.01),
-                               next_frames=arch_params.get("next", True),
+                               future_frames=arch_params.get("next", True),
                                scale_edm = seg_args.get("scale_edm", False),
                                center_mode=seg_args.get("center_mode", "MEDOID"),
                                center_distance_mode=seg_args.get("center_distance_mode", "GEODESIC"),
                                frame_window=fw,
                                image_data_generators=[data_generators[0], mask_generator] + data_generators[1:],
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
-                               void_mask_proportion = [0, 0] if fw == 0 else None, # exclude empty frame, only when no frame window
+                               void_mask_proportion = [0, 0] if fw == 0 else None,  # exclude empty frame, only when no frame window
                                channels_postprocessing_function=pp_fun, verbose=False and RUN_TEST, memory_persistent=memory_persistent)
         array_kw = (ARRAY_KEYWORDS[:1] if tracking else []) + (ARRAY_KEYWORDS[1:] if category_number>1 else [])
         return DyDxIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
                             input_label_keywords=label_names, array_keywords=array_kw,
                             input_label_center_idx = seg_args.get("input_label_center_idx", -1),
+                            segmentation=segmentation,
                             tracking = tracking,
+                            frame_aware = frame_aware,
                             group_keyword=ds_conf.get("keyword", None),
                             batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=seg_args.get("edm_derivatives", True),
                             aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
                             **iterator_params)
 
 
-    def get_edm_class_weights(config: dict, max_weight:float):
+    def get_edm_class_weights(config: dict, power_law:float = 1, max_weight:float=None):
         counts = np.array([0, 0], dtype="float128")
         for i, ds_conf in enumerate(config["dataset_list"]):
             counts += get_background_foreground_counts(ds_conf["path"], channel_keyword='/regionLabels', group_keyword=ds_conf.get("keyword", None))
-        weights = compute_category_weights(dict(zip(["bck", "fore"], counts.tolist())), max_weight)
+        weights = compute_category_weights(counts.tolist(), power_law=power_law, max_weight=max_weight)
         return weights.astype("float32")
 
-    def get_link_multiplicity_class_weights(config: dict, max_weight= 50):
-        counts = {i: 0 for i in range(0, 3)}
-        log = True
+    def get_link_multiplicity_class_weights(config: dict, max_weight= 50, power_law:float=1):
+        counts = [0] * 3
         for i, ds_conf in enumerate(config["dataset_list"]):
             dataset = get_datasetIO(ds_conf["path"], 'r')
             paths = dataset.get_dataset_paths(ARRAY_KEYWORDS[0], ds_conf.get("keyword", None))
@@ -197,53 +218,68 @@ if __name__ == "__main__":
                 counts[0] += s
                 counts[1] += m
                 counts[2] += n
-                log = False
             dataset.close()
-        print(f"link multiplicity counts: {counts}")
-        return compute_category_weights(counts, max_weight)
+        print(f"link multiplicity counts: {[int(x) for x in counts]}")
+        return compute_category_weights(counts, max_weight=max_weight, power_law = power_law)
 
 
     def init_model(training:bool):
         arch_args = copy.deepcopy(config["model_architecture"])
-        frame_window = arch_args.pop("frame_window", 3)
-        next = arch_args.pop("next", True)
-        inference_gap_number = arch_args.pop("inference_gap_number", 0)
         seg_args = config.get("segmentation", {})
-        tracking = not seg_args.get("segment_only", False)
+        tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
+        segmentation = seg_args.get("segmentation", True)
         shape = config["dataset_parameters"]["input_shape"]
         input_shape = [None if s <= 0 else s for s in shape]
-        arch_args["spatial_dimensions"] = input_shape.copy()
         nchan, nlabel = get_input_channel_and_label(config)
         n_inputs = nchan + nlabel * 2 # for each label EDM and GDCM are added
-        link_multiplicity_class_weights = get_link_multiplicity_class_weights(config, max_weight = 50) if training and tracking else None
-        if training and tracking:
-            print(f"link multiplicity weights: { {l:w for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
-        category_number = arch_args.pop("category_number", 0)
-        category_class_weights = get_category_class_weights(config, category_number, category_keyword=ARRAY_KEYWORDS[1], max_weight=10) if training and category_number > 1 else None
-        if category_class_weights is not None:
-            print(f"Category class weights: {category_class_weights}")
-        edm_max_weight = seg_args.get("edm_max_frequency_weight", 0)
-        edm_frequency_weights = get_edm_class_weights(config, edm_max_weight) if training and edm_max_weight>0 else None
-        if edm_frequency_weights is not None:
-            print(f"edm background/foreground balancing weights {edm_frequency_weights}")
-        arch = get_architecture(arch_args.pop("architecture_type", "blend"), **arch_args)
+        tracking_args = config.get("tracking", {})
+        lm_loss_params = tracking_args.get("lm_loss_parameters", {})
+        if training and tracking and lm_loss_params.get("weight_power_law", 1)>0:
+            link_multiplicity_class_weights = get_link_multiplicity_class_weights(config,  max_weight=50, power_law = lm_loss_params.get("weight_power_law", 1))
+            print(f"link multiplicity weights: { {l:float(w) for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
+        else:
+            link_multiplicity_class_weights = [1, 1, 1]
+        lm_focal_weight = lm_loss_params.get("focal_weight", 1)
+        category_number = arch_args.get("category_number", 0)
+        cat_loss_params = seg_args.get("category_loss_parameters", {})
+        if training and category_number > 1 and cat_loss_params.get("weight_power_law", 1)>0:
+            category_class_counts = get_category_class_counts(config, category_number, category_keyword=ARRAY_KEYWORDS[1])
+            category_class_weights = compute_category_weights(category_class_counts, power_law=cat_loss_params.get("weight_power_law", 1))
+        else:
+            category_class_weights = [1] * category_number
+        category_focal_weight = cat_loss_params.get("focal_weight", 2)
+        balance_edm_weight = "balance_edm_frequency_parameters" in seg_args
+        edm_class_weights = get_edm_class_weights(config, power_law = seg_args["balance_edm_frequency_parameters"].get("weight_power_law", 1)) if training and balance_edm_weight else None
+        if edm_class_weights is not None:
+            print(f"edm background/foreground balancing weights {edm_class_weights}")
+        arch = get_architecture(arch_args.pop("architecture_type", "blend"),
+                                scale_edm=seg_args.get("scale_edm", False),
+                                spatial_dimensions=input_shape, n_inputs=n_inputs, segmentation=segmentation, tracking=tracking, **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
         if training: # perform test step if at least one test dataset
             ds_types = [ ds_conf.get("type", "TRAIN") for ds_conf in config["dataset_list"] ]
             perform_test_step = "TEST" in ds_types
         else:
             perform_test_step = False
+
         def make_model(legacy:bool=False):
-            return get_distnet_2d(spatial_dimensions=input_shape, n_inputs=n_inputs, config=arch, next=next, frame_window=frame_window, tracking=tracking, accum_steps=1, l2_reg=0, edm_frequency_weights=edm_frequency_weights, edm_derivative_loss=seg_args.get("edm_derivatives", True), scale_edm = seg_args.get("scale_edm", False), cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius, link_multiplicity_class_weights=link_multiplicity_class_weights, category_number=category_number, category_class_weights=category_class_weights, inference_gap_number=inference_gap_number, perform_test_step=perform_test_step, legacy_multi_input_arch = legacy)
+            return get_distnet_2d(arch=arch,
+                                  gradient_accumulation_steps = config["training_parameters"].get("gradient_accumulation_steps", 1),
+                                  edm_class_weights=edm_class_weights,
+                                  edm_derivative_loss=seg_args.get("edm_derivatives", True),
+                                  cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
+                                  link_multiplicity_class_weights=link_multiplicity_class_weights, link_multiplicity_focal_weight=lm_focal_weight,
+                                  category_class_weights=category_class_weights, category_focal_weight = category_focal_weight,
+                                  perform_test_step=perform_test_step, scale_losses = not legacy)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             try:
-                model.load_weights(WEIGHT_PATH)
+                model.load_weights(WEIGHT_PATH) # , by_name=True
             except Exception as e: # re-try in legacy mode
                 print(e)
                 model = make_model(True)
-                model.load_weights(WEIGHT_PATH)
+                model.load_weights(WEIGHT_PATH) # , by_name=True
 
             print(f"Weights loaded : {WEIGHT_PATH}", flush=True)
         elif LOAD_WEIGHT_PATH is not None or args.compute_metrics or args.test_predict :
@@ -264,6 +300,7 @@ if __name__ == "__main__":
                     model = make_model(True)
                     model.load_weights(LOAD_WEIGHT_PATH)
             print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
+            #print(f"model loss scales: {model.loss_scales}")
         return model
 
 
@@ -276,9 +313,10 @@ if __name__ == "__main__":
         set_to_iterator(iterator, fun)
 
 
-    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, tracking:bool=True):
-        metrics_fun_ = get_metrics_fun(scale, category=category_number>1, tracking=tracking)
+    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, segmentation:bool=True, tracking:bool=True):
+        metrics_fun_ = get_metrics_fun(scale, category=category_number>1, segmentation=segmentation, tracking=tracking)
         if tracking:
+            assert segmentation
             def fun(y_true, y_pred):
                 fw = frame_window
                 n_frame_pairs = fw * 2
@@ -291,19 +329,59 @@ if __name__ == "__main__":
                                     tf.gather(y_pred[3], indices=d_indices, axis=-1),
                                     tf.gather(y_pred[4], indices=lm_indices, axis=-1), y_true[0], y_true[5] if category_number>1 else None, y_true[2], y_true[3],
                                     y_true[4], y_true[-3], y_true[-2], y_true[-1])
-        else:
+        elif segmentation:
             def fun(y_true, y_pred):
                 fw = frame_window
                 return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1], y_pred[2][..., fw*category_number:(fw+1)*category_number] if category_number>1 else None,
                                     y_true[0], y_true[2] if category_number>1 else None, y_true[-2], y_true[-1])
+        else:
+            assert category_number > 1, f"category_number {category_number} must be > 1"
+            def fun(y_true, y_pred):
+                fw = frame_window
+                return metrics_fun_(y_pred[0][..., fw*category_number:(fw+1)*category_number], y_true[1], y_true[-2], y_true[-1])
         return fun
 
 
+    def init_loss_scales(model, train_it, steps:int=30):
+        if len(model.get_sub_losses_names()) == 1:
+            return
+        steps = min(len(train_it), steps)
+        losses_names = model.get_sub_losses_names()
+        acc_losses = {k: [] for k in losses_names}
+        if steps>0:
+            print("initializing loss scales...", flush=True)
+            @tf.function
+            def run_batch(model, data):
+                return model.test_step(data)
+
+            enq = OrderedEnqueuerCF(train_it, shuffle=True, name="init_test", use_shm=False, use_shared_array=True, max_steps=steps)
+            enq.start(workers=WORKERS, max_queue_size=max(1, min(STEP_NUMBER - 1,  WORKERS)))
+            gen = enq.get()
+            enq.start()
+            for i in range(steps):
+                data = next(gen)
+                print(f"{i+1}/{steps}", flush=True)
+                losses = run_batch(model, data)
+                if i%3==0:
+                    reinitialize_weights(model)
+                for k in losses_names:
+                    acc_losses[k].append(losses[k])
+            enq.stop()
+            del enq
+            mean_losses = [np.mean(acc_losses[k]) for k in losses_names]
+            print(f"loss scales init values: {[float(m) for m in mean_losses]}", flush=True)
+        else:
+            mean_losses = [1] * len(losses_names)
+        model.loss_scales.assign(mean_losses)
+
+
     if args.export_only:
-        print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})", flush=True)
+        print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)}) fp16: {args.export_fp16}", flush=True)
         model = init_model(False)
-        # export model
-        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+        if args.export_fp16:
+            export_fp16_model(model, SAVED_MODEL_PATH)
+        else:
+            model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
         print("model saved", flush=True)
     else:
         print(f"init iterator...", flush=True)
@@ -314,13 +392,32 @@ if __name__ == "__main__":
         #it_steps = STEP_NUMBER if WORKERS==1 else 0
 
         if RUN_TEST:
+            seg_args = config.get("segmentation", {})
+            tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
+            segmentation = seg_args.get("segmentation", True)
+            category_number = config["model_architecture"].get("category_number", 0)
+            category_only = not segmentation and not tracking and category_number > 0
             train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
             test_param = config.get("test_data_augmentation_parameters", {})
             root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
+            arch_params = config["model_architecture"]
+            default_frame_aware = arch_params["architecture_type"].lower() == "tempy" # TODO change this mechanism
+            frame_aware = arch_params.get("frame_aware", default_frame_aware)
+            if arch_params["frame_window"] == 0:
+                frame_aware = False
+            if segmentation and tracking:
+                output_name = ["EDM", "CDM", "dY", "dX", "LinkMultiplicity", "Category"]
+            elif segmentation:
+                output_name = ["EDM", "CDM", "Category"]
+            elif category_only:
+                output_name = ["Category"]
+            else:
+                raise ValueError("Invalid configuration: allowed mode = segmentation + tracking (+category) / segmentation (+category) / category only")
             idx = test_param.get("batch_index", -1)
             if idx < 0 or idx >= len(train_it):
                 idx = random.randint(0, len(train_it)-1)
+
             inputs = []
             outputs = []
             if args.test_data_augmentation:
@@ -329,6 +426,8 @@ if __name__ == "__main__":
                 print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
                 for i in range(n_iterations):
                     input, output = train_it[idx]
+                    if frame_aware:
+                        input = input[:-1]
                     #idx_a = np.copy(train_it.index_array)
                     #print(f"index array: {idx_a}")
                     #if isinstance(train_it, ConcatIterator):
@@ -340,9 +439,11 @@ if __name__ == "__main__":
                     print(f"{i + 1}/{n_iterations}", flush=True)
             else: # test predict
                 model = init_model(False)
-                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
+                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON)) # test : , clipnorm=1.0
                 input, _ = train_it[idx]
                 output = model.predict(input)
+                if frame_aware:
+                    input = input[:-1]
                 inputs.append(input)
                 outputs.append(output)
 
@@ -358,9 +459,12 @@ if __name__ == "__main__":
                 inputs = [np.transpose(inputs, transpose_axis)]
                 input_names = cnames
             if len(outputs)>0:
-                outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
-                outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
-                output_name = ["EDM", "CDM", "dY", "dX", "LinkMultiplicity", "Category"]
+                if len(output_name) > 1 or isinstance(outputs[0], (list, tuple)):
+                    outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
+                    outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
+                else:
+                    outputs = [np.transpose(np.stack(outputs, 0), transpose_axis)]
+
             print(f"writing {len(outputs)+len(inputs)} x {inputs[0].shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
                 for i, o in enumerate(inputs):
@@ -378,9 +482,10 @@ if __name__ == "__main__":
             hard_sample_mining_param = t_p.get("hard_sample_mining", {})
             scale = hard_sample_mining_param.get("scale", hard_sample_mining_param.get("center_scale", 4) * 2) if hard_sample_mining_param is not None else 8
             seg_args = config.get("segmentation", {})
-            tracking = not seg_args.get("segment_only", False)
+            tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
+            segmentation = seg_args.get("segmentation", True)
             category_number = config["model_architecture"].get("category_number", 0)
-            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, tracking=tracking), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
             if isinstance(batch_size, (list, tuple)):
                 tile_column = np.concatenate([np.tile(np.arange(n_t), b_s) for b_s, n_t in zip(batch_size, n_tiles)], axis=0)
             else:
@@ -436,17 +541,36 @@ if __name__ == "__main__":
 
             with strategy.scope():
                 model = init_model(training=True)
-                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
-            
+                learning_rate = CosineDecayResume(initial_learning_rate=LR,
+                                            min_lr=MIN_LR,
+                                            decay_steps=STEP_NUMBER * N_EPOCHS,
+                                            start_step = STEP_NUMBER * START_EPOCH,
+                                            warmup_learning_rate_factor=1./10,
+                                            warmup_steps = STEP_NUMBER * WARMUP_EPOCHS)
+                model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate, epsilon=EPSILON))
+
+                if LOAD_WEIGHT_PATH is None:
+                    init_loss_scales(model, train_it, steps=30)
+
             # perform training
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
-            lr_schedule = ReduceLROnPlateau2(min_lr=MIN_LR, factor=0.5, patience=PATIENCE, verbose=1, min_delta=0.001, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss')
             tensorboard_callback = None #tf.keras.callbacks.TensorBoard(LOG_PATH)
-            callbacks = [lr_schedule, checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
+            callbacks = [LogLRCallback(), checkpoint, tf.keras.callbacks.TerminateOnNaN(), StopOnLR(MIN_LR)]
+            callbacks.append(LogGradientCallback(STEP_NUMBER))
+            if MIN_EPSILON<EPSILON:
+                eps_cb = EpsilonCosineDecayCallback(start_epsilon=EPSILON, min_epsilon=MIN_EPSILON, decay_steps=STEP_NUMBER * WARMUP_EPOCHS)
+                callbacks.append(eps_cb)
             if tensorboard_callback is not None:
                 callbacks.append(tensorboard_callback)
+            #callbacks.append(GradientMonitorCallback(STEP_NUMBER))
             log_cb = LogsCallback(LOG_PATH + ".csv", start_epoch=0)
             callbacks.append(log_cb)
+
+            if "balance_edm_frequency_parameters" in config.get("segmentation", {}):
+                freq_param = config["segmentation"]["balance_edm_frequency_parameters"]
+                if freq_param.get("dynamic_weights", True):
+                    callbacks.append(ClassWeightScheduler(attribute_name = "edm_class_weights", n_epochs=N_EPOCHS, power_law = freq_param.get("dynamic_power_law", 1)))
+            category_number = config["model_architecture"].get("category_number", 0)
 
             hard_sample_mining_param = t_p.get("hard_sample_mining", None)
             if hard_sample_mining_param is not None:
@@ -460,9 +584,10 @@ if __name__ == "__main__":
                 hsm_it = get_iterator(config, init_iterator, existing_iterator=train_it, step_number=0, shuffle=False, hsm=True) # needs to be a different iterator as iterator.return_central_only
                 configure_metrics_iterator(hsm_it)
                 seg_args = config.get("segmentation", {})
-                tracking = not seg_args.get("segment_only", False)
+                tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
+                segmentation = seg_args.get("segmentation", True)
                 arch_params = config["model_architecture"]
-                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), tracking=tracking), period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
+                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), segmentation=segmentation, tracking=tracking), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
                 callbacks.append(hsm_cb)
             else:
                 hsm_it = None
@@ -479,14 +604,14 @@ if __name__ == "__main__":
                     shm = get_shm_info()
                     if shm is not None and shm[2] < 1:
                         print( f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
-                    enq = OrderedEnqueuerCF(train_it, shuffle=True, name="main")
+                    enq = OrderedEnqueuerCF(train_it, shuffle=True, name="main", use_shm=False, use_shared_array=True)
                     if hsm_cb is not None:
                         hsm_cb.set_enqueuer(enq)
 
                     if val_it is not None:
                         val_enq = OrderedEnqueuerCF(val_it, shuffle=False, name="val", use_shm=False, use_shared_array=False)
                         val_cb.set_enqueuer(val_enq, enq)
-                        val_enq.start(workers=WORKERS, max_queue_size=max(3, min(VAL_STEP_NUMBER - 1, WORKERS)))
+                        val_enq.start(workers=WORKERS, max_queue_size=max(1, min(VAL_STEP_NUMBER - 1,  WORKERS)))
                         val_gen = val_enq.get(block=False, name="val")
                     else:
                         val_gen = None
@@ -526,19 +651,27 @@ if __name__ == "__main__":
                         if is_chief
                         else SAVED_MODEL_PATH + "_tmp_" + os.environ.get("SLURM_PROCID", "")
                     )
-
-                    model.save(
-                        save_path,
-                        include_optimizer=False,
-                        save_traces=True,
-                        inference=True,
-                    )
-                    print("model saved", flush=True)
+                    if is_chief:
+                        model.load_weights(WEIGHT_PATH)  # reload best weights
+                    if args.export_fp16:
+                        export_fp16_model(model, save_path)
+                    else:
+                        model.save(
+                            save_path,
+                            include_optimizer=False,
+                            save_traces=True,
+                            inference=True,
+                        )
+                    print(f"model saved. fp16: {args.export_fp16}", flush=True)
 
                     if not is_chief:
                         print(f"cleaning temp models at {save_path}", flush=True)
                         shutil.rmtree(save_path)  # clean up for non chief worker
                 else:
-                    model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
-                    print("model saved", flush=True)
+                    model.load_weights(WEIGHT_PATH)  # reload best weights
+                    if args.export_fp16:
+                        export_fp16_model(model, SAVED_MODEL_PATH)
+                    else:
+                        model.save(SAVED_MODEL_PATH, include_optimizer=False, save_traces=True, inference=True)
+                    print(f"model saved. fp16: {args.export_fp16}", flush=True)
 

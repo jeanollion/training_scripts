@@ -3,7 +3,7 @@ RUN apt-get -y update
 RUN apt-get -y install git
 RUN apt-get -y install wget
 RUN pip install --upgrade pip 
-RUN pip install tensorflow-probability[tf]==0.24.0
+RUN pip install tensorflow-probability==0.24.0
 RUN pip install scipy scikit-learn scikit-image tifffile imageio elasticdeform edt
 RUN pip install numba
 RUN pip install scikit-fmm
