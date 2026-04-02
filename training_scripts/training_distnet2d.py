@@ -604,12 +604,12 @@ if __name__ == "__main__":
                     shm = get_shm_info()
                     if shm is not None and shm[2] < 1:
                         print( f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
-                    enq = OrderedEnqueuerCF(train_it, shuffle=True, name="main", use_shm=False, use_shared_array=True)
+                    enq = OrderedEnqueuerCF(train_it, shuffle=True, name="main")
                     if hsm_cb is not None:
                         hsm_cb.set_enqueuer(enq)
 
                     if val_it is not None:
-                        val_enq = OrderedEnqueuerCF(val_it, shuffle=False, name="val", use_shm=False, use_shared_array=False)
+                        val_enq = OrderedEnqueuerCF(val_it, shuffle=False, name="val", max_steps=VAL_STEP_NUMBER)
                         val_cb.set_enqueuer(val_enq, enq)
                         val_enq.start(workers=WORKERS, max_queue_size=max(1, min(VAL_STEP_NUMBER - 1,  WORKERS)))
                         val_gen = val_enq.get(block=False, name="val")

@@ -315,7 +315,7 @@ if __name__ == "__main__":
                     #enq = tf.keras.utils.OrderedEnqueuer(train_it, use_multiprocessing=True, shuffle=True)
                     enq = OrderedEnqueuerCF(train_it, shuffle=True) #, name="train_gen"
                     if val_it is not None:
-                        val_enq = OrderedEnqueuerCF(val_it, shuffle=False) #, name="test_gen"
+                        val_enq = OrderedEnqueuerCF(val_it, shuffle=False, name="val", max_steps=VAL_STEP_NUMBER) #, name="test_gen"
                         val_cb.set_enqueuer(val_enq, enq)
                         val_enq.start(workers=WORKERS, max_queue_size=max(3, min(VAL_STEP_NUMBER, WORKERS)))
                         val_gen = val_enq.get(block=False, name="val")
