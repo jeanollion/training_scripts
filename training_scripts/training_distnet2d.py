@@ -23,8 +23,8 @@ from dataset_iterator.hard_sample_mining import HardSampleMiningCallback, comput
 from dataset_iterator.ordered_enqueuer_cf import OrderedEnqueuerCF
 from dataset_iterator.keras_callbacks import StopOnLR, LogsCallback, SafeModelCheckpoint, ReduceLROnPlateau2, \
     LogLRCallback
-from distnet_2d.data import DyDxIterator
-from distnet_2d.data.dydx_iterator import ARRAY_KEYWORDS
+from distnet_2d.data import DistnetIterator
+from distnet_2d.data.distnet_iterator import ARRAY_KEYWORDS
 from distnet_2d.data.swim1d import get_swim1d_function
 from distnet_2d.model.architectures import get_architecture
 from distnet_2d.model.distnet_2d import get_distnet_2d
@@ -187,17 +187,22 @@ if __name__ == "__main__":
                                elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None),
                                void_mask_proportion = [0, 0] if fw == 0 else None,  # exclude empty frame, only when no frame window
                                channels_postprocessing_function=pp_fun, verbose=False and RUN_TEST, memory_persistent=memory_persistent)
+        dataset_parameters = config.get("dataset_parameters", {})
+        tridimensional_mode = len(dataset_parameters.get("input_shape", [None, None])) == 3
+        z_radius = dataset_parameters.get("z_radius", 1.)
         array_kw = (ARRAY_KEYWORDS[:1] if tracking else []) + (ARRAY_KEYWORDS[1:] if category_number>1 else [])
-        return DyDxIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
-                            input_label_keywords=label_names, array_keywords=array_kw,
-                            input_label_center_idx = seg_args.get("input_label_center_idx", -1),
-                            segmentation=segmentation,
-                            tracking = tracking,
-                            frame_aware = frame_aware,
-                            group_keyword=ds_conf.get("keyword", None),
-                            batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=seg_args.get("edm_derivatives", True),
-                            aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
-                            **iterator_params)
+        return DistnetIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
+                               input_label_keywords=label_names, array_keywords=array_kw,
+                               input_label_center_idx = seg_args.get("input_label_center_idx", -1),
+                               segmentation=segmentation,
+                               tracking = tracking,
+                               frame_aware = frame_aware,
+                               tridimensional_mode=tridimensional_mode,
+                               z_radius=z_radius,
+                               group_keyword=ds_conf.get("keyword", None),
+                               batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=seg_args.get("edm_derivatives", True),
+                               aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
+                               **iterator_params)
 
 
     def get_edm_class_weights(config: dict, power_law:float = 1, max_weight:float=None):
@@ -313,10 +318,15 @@ if __name__ == "__main__":
         set_to_iterator(iterator, fun)
 
 
-    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, segmentation:bool=True, tracking:bool=True):
+    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, segmentation:bool=True, tracking:bool=True, tridimensional_mode:bool=False):
         metrics_fun_ = get_metrics_fun(scale, category=category_number>1, segmentation=segmentation, tracking=tracking)
         if tracking:
             assert segmentation
+            # output indices: [EDM, CDM, (dZ), dY, dX, LM, Cat]
+            dy_idx = 3 if tridimensional_mode else 2
+            dx_idx = 4 if tridimensional_mode else 3
+            lm_idx = 5 if tridimensional_mode else 4
+            cat_idx = 6 if tridimensional_mode else 5
             def fun(y_true, y_pred):
                 fw = frame_window
                 n_frame_pairs = fw * 2
@@ -324,11 +334,11 @@ if __name__ == "__main__":
                     n_frame_pairs += (fw - 1) * 2
                 d_indices = [fw - 1, n_frame_pairs + fw] # BW & FW (verified)
                 lm_indices = [d_indices[0] * 3 + i for i in range(3)] + [d_indices[1] * 3 + i for i in range(3)] # BW & FW (link multiplicity: 3 categories each: single, multiple, null)
-                return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1], y_pred[5][..., fw*category_number:(fw+1)*category_number] if category_number>1 else None,
-                                    tf.gather(y_pred[2], indices=d_indices, axis=-1),
-                                    tf.gather(y_pred[3], indices=d_indices, axis=-1),
-                                    tf.gather(y_pred[4], indices=lm_indices, axis=-1), y_true[0], y_true[5] if category_number>1 else None, y_true[2], y_true[3],
-                                    y_true[4], y_true[-3], y_true[-2], y_true[-1])
+                return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1], y_pred[cat_idx][..., fw*category_number:(fw+1)*category_number] if category_number>1 else None,
+                                    tf.gather(y_pred[dy_idx], indices=d_indices, axis=-1),
+                                    tf.gather(y_pred[dx_idx], indices=d_indices, axis=-1),
+                                    tf.gather(y_pred[lm_idx], indices=lm_indices, axis=-1), y_true[0], y_true[cat_idx] if category_number>1 else None, y_true[dy_idx], y_true[dx_idx],
+                                    y_true[lm_idx], y_true[-3], y_true[-2], y_true[-1])
         elif segmentation:
             def fun(y_true, y_pred):
                 fw = frame_window
@@ -406,8 +416,12 @@ if __name__ == "__main__":
             frame_aware = arch_params.get("frame_aware", default_frame_aware)
             if arch_params["frame_window"] == 0:
                 frame_aware = False
+            tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
             if segmentation and tracking:
-                output_name = ["EDM", "CDM", "dY", "dX", "LinkMultiplicity", "Category"]
+                if tridimensional_mode:
+                    output_name = ["EDM", "CDM", "dZ", "dY", "dX", "LinkMultiplicity", "Category"]
+                else:
+                    output_name = ["EDM", "CDM", "dY", "dX", "LinkMultiplicity", "Category"]
             elif segmentation:
                 output_name = ["EDM", "CDM", "Category"]
             elif category_only:
@@ -448,7 +462,7 @@ if __name__ == "__main__":
                 outputs.append(output)
 
             train_it.close()
-            transpose_axis = [4, 0, 1, 2, 3]
+            transpose_axis = [5, 0, 1, 2, 3, 4] if tridimensional_mode else [4, 0, 1, 2, 3]
             cnames, lnames = get_input_channel_and_label(config, True)
             if len(cnames) + len(lnames) > 1:
                 inputs = transpose_list(inputs)  # (n_it, n_in) -> (n_in, n_it)
@@ -464,6 +478,13 @@ if __name__ == "__main__":
                     outputs = [np.transpose(np.stack(o, 0), transpose_axis) for o in outputs]
                 else:
                     outputs = [np.transpose(np.stack(outputs, 0), transpose_axis)]
+            if tridimensional_mode:
+                if config["model_architecture"].get("frame_window", 3)>0: # remove batch axis
+                    inputs = [a[:, :, 0] for a in inputs]
+                    outputs = [a[:, :, 0] for a in outputs]
+                else: # remove time axis
+                    inputs = [a[0] for a in inputs]
+                    outputs = [a[0] for a in outputs]
 
             print(f"writing {len(outputs)+len(inputs)} x {inputs[0].shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
@@ -485,7 +506,8 @@ if __name__ == "__main__":
             tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
             segmentation = seg_args.get("segmentation", True)
             category_number = config["model_architecture"].get("category_number", 0)
-            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+            tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
+            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
             if isinstance(batch_size, (list, tuple)):
                 tile_column = np.concatenate([np.tile(np.arange(n_t), b_s) for b_s, n_t in zip(batch_size, n_tiles)], axis=0)
             else:
@@ -587,7 +609,8 @@ if __name__ == "__main__":
                 tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
                 segmentation = seg_args.get("segmentation", True)
                 arch_params = config["model_architecture"]
-                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), segmentation=segmentation, tracking=tracking), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
+                tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
+                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
                 callbacks.append(hsm_cb)
             else:
                 hsm_it = None

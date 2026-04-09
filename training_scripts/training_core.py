@@ -47,12 +47,15 @@ def open_config_file(config_dir:str, test:bool):
         assert os.path.exists(config["training_parameters"]["load_model_file"]), f'load model file not found in {config["training_parameters"]["load_model_file"]}'
     if test:
         test_param = config.get("test_data_augmentation_parameters", {})
+        if "input_shape" in test_param:
+            config["dataset_parameters"]["input_shape"] = test_param["input_shape"]
         if "batch_size" in test_param:
             config["dataset_parameters"]["batch_size"] = test_param["batch_size"]
         if "concat_batch_size" in test_param:
             config["dataset_parameters"]["concat_batch_size"] = test_param["concat_batch_size"]
-        if "input_shape" in test_param:
-            config["dataset_parameters"]["input_shape"] = test_param["input_shape"]
+        if len(config["dataset_parameters"].get("input_shape", [None, None])) == 3 and config["model_architecture"].get("frame_window", 3)>0: # override batch size in tridim mode
+            config["dataset_parameters"]["batch_size"] = 1
+            config["dataset_parameters"]["concat_batch_size"] = 1
         if test_param.get("constant_view", True):
             for ds_params in config["dataset_list"]:
                 if "tiling_parameters" in ds_params: # replace random tiling by constant tiling
@@ -124,8 +127,8 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
     kwargs["dataset_type"] = dataset_type
     hsm = kwargs.pop("hsm", False)
     input_shape = config["dataset_parameters"].get("input_shape", None)
-    if input_shape is not None:
-        ensure_multiplicity(2, input_shape)
+    if input_shape is not None and isinstance(input_shape, int):
+        input_shape = [input_shape]
     weight_limit = config["dataset_parameters"].get("loss_weight_range", None)
     ds_list_conf = copy.deepcopy(config["dataset_list"]) # do not modify configuration
     i=0
