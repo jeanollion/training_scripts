@@ -190,6 +190,8 @@ if __name__ == "__main__":
         dataset_parameters = config.get("dataset_parameters", {})
         tridimensional_mode = len(dataset_parameters.get("input_shape", [None, None])) == 3
         z_radius = dataset_parameters.get("z_radius", 1.)
+        category_frequencies = seg_args.get("category_frequencies", None)
+        return_weight_map = category_frequencies is not None or seg_args.get("return_weight_map", False)
         array_kw = (ARRAY_KEYWORDS[:1] if tracking else []) + (ARRAY_KEYWORDS[1:] if category_number>1 else [])
         return DistnetIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
                                input_label_keywords=label_names, array_keywords=array_kw,
@@ -199,6 +201,8 @@ if __name__ == "__main__":
                                frame_aware = frame_aware,
                                tridimensional_mode=tridimensional_mode,
                                z_radius=z_radius,
+                               return_weight_map=return_weight_map,
+                               category_frequencies=category_frequencies,
                                group_keyword=ds_conf.get("keyword", None),
                                batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=seg_args.get("edm_derivatives", True),
                                aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
@@ -261,6 +265,8 @@ if __name__ == "__main__":
                                 scale_edm=seg_args.get("scale_edm", False),
                                 spatial_dimensions=input_shape, n_inputs=n_inputs, segmentation=segmentation, tracking=tracking, **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
+        category_frequencies = seg_args.get("category_frequencies", None)
+        return_weight_map = category_frequencies is not None or seg_args.get("return_weight_map", False)
         if training: # perform test step if at least one test dataset
             ds_types = [ ds_conf.get("type", "TRAIN") for ds_conf in config["dataset_list"] ]
             perform_test_step = "TEST" in ds_types
@@ -275,7 +281,8 @@ if __name__ == "__main__":
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights, link_multiplicity_focal_weight=lm_focal_weight,
                                   category_class_weights=category_class_weights, category_focal_weight = category_focal_weight,
-                                  perform_test_step=perform_test_step, scale_losses = not legacy)
+                                  perform_test_step=perform_test_step, scale_losses = not legacy,
+                                  return_weight_map=return_weight_map)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
@@ -318,11 +325,12 @@ if __name__ == "__main__":
         set_to_iterator(iterator, fun)
 
 
-    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, segmentation:bool=True, tracking:bool=True, tridimensional_mode:bool=False):
+    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, segmentation:bool=True, tracking:bool=True, tridimensional_mode:bool=False, return_weight_map:bool=False):
         metrics_fun_ = get_metrics_fun(scale, category=category_number>1, segmentation=segmentation, tracking=tracking)
+        _wm_offset = 1 if return_weight_map else 0
         if tracking:
             assert segmentation
-            # output indices: [EDM, CDM, (dZ), dY, dX, LM, Cat]
+            # output indices: [EDM, CDM, (dZ), dY, dX, LM, Cat, (WeightMap)]
             dy_idx = 3 if tridimensional_mode else 2
             dx_idx = 4 if tridimensional_mode else 3
             lm_idx = 5 if tridimensional_mode else 4
@@ -338,17 +346,17 @@ if __name__ == "__main__":
                                     tf.gather(y_pred[dy_idx], indices=d_indices, axis=-1),
                                     tf.gather(y_pred[dx_idx], indices=d_indices, axis=-1),
                                     tf.gather(y_pred[lm_idx], indices=lm_indices, axis=-1), y_true[0], y_true[cat_idx] if category_number>1 else None, y_true[dy_idx], y_true[dx_idx],
-                                    y_true[lm_idx], y_true[-3], y_true[-2], y_true[-1])
+                                    y_true[lm_idx], y_true[-3 - _wm_offset], y_true[-2 - _wm_offset], y_true[-1 - _wm_offset])
         elif segmentation:
             def fun(y_true, y_pred):
                 fw = frame_window
                 return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1], y_pred[2][..., fw*category_number:(fw+1)*category_number] if category_number>1 else None,
-                                    y_true[0], y_true[2] if category_number>1 else None, y_true[-2], y_true[-1])
+                                    y_true[0], y_true[2] if category_number>1 else None, y_true[-2 - _wm_offset], y_true[-1 - _wm_offset])
         else:
             assert category_number > 1, f"category_number {category_number} must be > 1"
             def fun(y_true, y_pred):
                 fw = frame_window
-                return metrics_fun_(y_pred[0][..., fw*category_number:(fw+1)*category_number], y_true[1], y_true[-2], y_true[-1])
+                return metrics_fun_(y_pred[0][..., fw*category_number:(fw+1)*category_number], y_true[1], y_true[-2 - _wm_offset], y_true[-1 - _wm_offset])
         return fun
 
 
@@ -417,6 +425,7 @@ if __name__ == "__main__":
             if arch_params["frame_window"] == 0:
                 frame_aware = False
             tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
+            _return_wm = seg_args.get("category_frequencies", None) is not None or seg_args.get("return_weight_map", False)
             if segmentation and tracking:
                 if tridimensional_mode:
                     output_name = ["EDM", "CDM", "dZ", "dY", "dX", "LinkMultiplicity", "Category"]
@@ -428,6 +437,8 @@ if __name__ == "__main__":
                 output_name = ["Category"]
             else:
                 raise ValueError("Invalid configuration: allowed mode = segmentation + tracking (+category) / segmentation (+category) / category only")
+            if _return_wm:
+                output_name.append("WeightMap")
             idx = test_param.get("batch_index", -1)
             if idx < 0 or idx >= len(train_it):
                 idx = random.randint(0, len(train_it)-1)
@@ -507,7 +518,8 @@ if __name__ == "__main__":
             segmentation = seg_args.get("segmentation", True)
             category_number = config["model_architecture"].get("category_number", 0)
             tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
-            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+            _return_wm = seg_args.get("category_frequencies", None) is not None or seg_args.get("return_weight_map", False)
+            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode, return_weight_map=_return_wm), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
             if isinstance(batch_size, (list, tuple)):
                 tile_column = np.concatenate([np.tile(np.arange(n_t), b_s) for b_s, n_t in zip(batch_size, n_tiles)], axis=0)
             else:
@@ -610,7 +622,8 @@ if __name__ == "__main__":
                 segmentation = seg_args.get("segmentation", True)
                 arch_params = config["model_architecture"]
                 tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
-                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
+                _return_wm = seg_args.get("category_frequencies", None) is not None or seg_args.get("return_weight_map", False)
+                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode, return_weight_map=_return_wm), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
                 callbacks.append(hsm_cb)
             else:
                 hsm_it = None
