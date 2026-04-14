@@ -367,7 +367,6 @@ if __name__ == "__main__":
             enq = OrderedEnqueuerCF(train_it, shuffle=True, name="init_test", use_shm=False, use_shared_array=True, max_steps=steps)
             enq.start(workers=WORKERS, max_queue_size=max(1, min(STEP_NUMBER - 1,  WORKERS)))
             gen = enq.get()
-            enq.start()
             for i in range(steps):
                 data = next(gen)
                 print(f"{i+1}/{steps}", flush=True)
@@ -383,7 +382,6 @@ if __name__ == "__main__":
         else:
             mean_losses = [1] * len(losses_names)
         model.loss_scales.assign(mean_losses)
-
 
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)}) fp16: {args.export_fp16}", flush=True)
