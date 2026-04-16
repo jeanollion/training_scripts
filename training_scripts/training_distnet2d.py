@@ -691,7 +691,7 @@ if __name__ == "__main__":
                 arch_params = config["model_architecture"]
                 tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
                 category_number = arch_params.get("category_number", 0)
-                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode, exclusion_weight_map=False), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
+                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode, exclusion_weight_map=False), n_epochs=N_EPOCHS, period=period, start_epoch=START_EPOCH, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
                 callbacks.append(hsm_cb)
             else:
                 hsm_it = None
