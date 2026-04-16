@@ -364,7 +364,7 @@ if __name__ == "__main__":
             def run_batch(model, data):
                 return model.test_step(data)
 
-            enq = OrderedEnqueuerCF(train_it, shuffle=True, name="init_test", use_shm=False, use_shared_array=True, max_steps=steps)
+            enq = OrderedEnqueuerCF(train_it, shuffle=True, name="init_test", max_steps=steps)
             enq.start(workers=WORKERS, max_queue_size=max(1, min(STEP_NUMBER - 1,  WORKERS)))
             gen = enq.get()
             for i in range(steps):
@@ -462,9 +462,15 @@ if __name__ == "__main__":
             train_it.close()
             transpose_axis = [5, 0, 1, 2, 3, 4] if tridimensional_mode else [4, 0, 1, 2, 3]
             cnames, lnames = get_input_channel_and_label(config, True)
-            inputs = transpose_list(inputs)  # (n_it, n_in) -> (n_in, n_it)
-            inputs = [np.transpose(np.stack(i, 0), transpose_axis) for i in inputs]
-            input_names = cnames + [f"{ln}_{'EDM' if i == 0 else 'CDM'}" for ln in lnames for i in range(2)]
+            if len(cnames) + len(lnames) > 1:
+                inputs = transpose_list(inputs)  # (n_it, n_in) -> (n_in, n_it)
+                inputs = [np.transpose(np.stack(i, 0), transpose_axis) for i in inputs]
+                input_names = cnames + [f"{ln}_{'EDM' if i == 0 else 'CDM'}" for ln in lnames for i in range(2)]
+            else:
+                inputs = np.stack(inputs, 0)
+                inputs = [np.transpose(inputs, transpose_axis)]
+                input_names = cnames
+
             if len(outputs)>0:
                 if len(output_name) > 1 or isinstance(outputs[0], (list, tuple)):
                     outputs = transpose_list(outputs) # (n_it, n out) -> (n_out, n_it)
