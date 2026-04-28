@@ -568,7 +568,10 @@ if __name__ == "__main__":
                                             start_step = STEP_NUMBER * START_EPOCH,
                                             warmup_learning_rate_factor=1./10,
                                             warmup_steps = STEP_NUMBER * WARMUP_EPOCHS)
-                model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate, epsilon=EPSILON))
+                accum_steps = config["training_parameters"].get("gradient_accumulation_steps", 1)
+                beta_1 = 0.9 ** (1.0 / accum_steps)
+                beta_2 = 0.999 ** (1.0 / accum_steps)
+                model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate, beta_1=beta_1, beta_2=beta_2, epsilon=EPSILON))
 
                 if LOAD_WEIGHT_PATH is None:
                     init_loss_scales(model, train_it, steps=30)
