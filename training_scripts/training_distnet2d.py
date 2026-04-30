@@ -34,7 +34,8 @@ from distnet_2d.utils.helpers import get_background_foreground_counts, count_lin
 from distnet_2d.utils.metrics_tf import get_metrics_fun
 from training_core import open_config_file, get_iterator, chain_pp_fun, set_to_iterator, should_load_dataset_in_shm, \
     get_shm_info, get_input_channel_and_label, get_category_class_counts, compute_category_weights, check_requirements, \
-    print_requirement_error, compare_versions, reinitialize_weights, export_fp16_model
+    print_requirement_error, compare_versions, reinitialize_weights, export_fp16_model, \
+    compute_category_keep_probabilities
 
 __VERSION__ = '1.1.6'
 __REQUIRES__ = ["dataset_iterator>=0.5.8", "distnet2d>=0.2.5" ]
@@ -100,7 +101,7 @@ if __name__ == "__main__":
     START_EPOCH = t_p.get("start_epoch", 0)
     print(f"configuration file found. ")
 
-    def init_iterator(ds_conf, step_number, dataset=None, **kwargs):
+    def init_iterator(ds_conf, step_number, dataset=None, category_class_counts:list[int] = None, **kwargs):
         data_aug_params = ds_conf.get("data_augmentation", {})
         seg_args = config.get("segmentation", {})
         tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
@@ -190,8 +191,16 @@ if __name__ == "__main__":
         dataset_parameters = config.get("dataset_parameters", {})
         tridimensional_mode = len(dataset_parameters.get("input_shape", [None, None])) == 3
         z_radius = dataset_parameters.get("z_radius", 1.)
-        category_frequencies = seg_args.get("category_frequencies", None)
-        return_weight_map = category_frequencies is not None or seg_args.get("return_weight_map", False)
+        if category_number > 1 and category_class_counts is not None:
+            cat_loss_param = seg_args.get("category_loss_parameters", {})
+            return_loss_mask = cat_loss_param.get("class_balanced_loss_masking", False)
+            if return_loss_mask:
+                category_keep_probabilities = compute_category_keep_probabilities( category_class_counts, power_law=cat_loss_param.get("weight_power_law", 1)) if return_loss_mask else None
+            else:
+                category_keep_probabilities = None
+        else:
+            return_loss_mask = False
+            category_keep_probabilities = None
         array_kw = (ARRAY_KEYWORDS[:1] if tracking else []) + (ARRAY_KEYWORDS[1:] if category_number>1 else [])
         return DistnetIterator(dataset=dataset, channel_keywords=[channel_names[0], '/regionLabels'] + channel_names[1:],
                                input_label_keywords=label_names, array_keywords=array_kw,
@@ -201,8 +210,8 @@ if __name__ == "__main__":
                                frame_aware = frame_aware,
                                tridimensional_mode=tridimensional_mode,
                                z_radius=z_radius,
-                               return_weight_map=return_weight_map,
-                               category_frequencies=category_frequencies,
+                               return_loss_mask=return_loss_mask,
+                               category_keep_probabilities=category_keep_probabilities,
                                group_keyword=ds_conf.get("keyword", None),
                                batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=seg_args.get("edm_derivatives", True),
                                aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
@@ -232,7 +241,7 @@ if __name__ == "__main__":
         return compute_category_weights(counts, max_weight=max_weight, power_law = power_law)
 
 
-    def init_model(training:bool):
+    def init_model(training:bool, category_class_counts:list[int]=None):
         arch_args = copy.deepcopy(config["model_architecture"])
         seg_args = config.get("segmentation", {})
         tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
@@ -251,12 +260,12 @@ if __name__ == "__main__":
         lm_focal_weight = lm_loss_params.get("focal_weight", 1)
         category_number = arch_args.get("category_number", 0)
         cat_loss_params = seg_args.get("category_loss_parameters", {})
-        if training and category_number > 1 and cat_loss_params.get("weight_power_law", 1)>0:
-            category_class_counts = get_category_class_counts(config, category_number, category_keyword=ARRAY_KEYWORDS[1])
+        if training and category_number > 1 and cat_loss_params.get("weight_power_law", 1)>0 and category_class_counts is not None:
             category_class_weights = compute_category_weights(category_class_counts, power_law=cat_loss_params.get("weight_power_law", 1))
         else:
             category_class_weights = [1] * category_number
         category_focal_weight = cat_loss_params.get("focal_weight", 2)
+        return_loss_mask = cat_loss_params.get("class_balanced_loss_masking", False)
         balance_edm_weight = "balance_edm_frequency_parameters" in seg_args
         edm_class_weights = get_edm_class_weights(config, power_law = seg_args["balance_edm_frequency_parameters"].get("weight_power_law", 1)) if training and balance_edm_weight else None
         if edm_class_weights is not None:
@@ -265,8 +274,6 @@ if __name__ == "__main__":
                                 scale_edm=seg_args.get("scale_edm", False),
                                 spatial_dimensions=input_shape, n_inputs=n_inputs, segmentation=segmentation, tracking=tracking, **arch_args)
         cdm_loss_radius = seg_args.get("cdm_loss_radius", 0)
-        category_frequencies = seg_args.get("category_frequencies", None)
-        return_weight_map = category_frequencies is not None or seg_args.get("return_weight_map", False)
         if training: # perform test step if at least one test dataset
             ds_types = [ ds_conf.get("type", "TRAIN") for ds_conf in config["dataset_list"] ]
             perform_test_step = "TEST" in ds_types
@@ -282,7 +289,7 @@ if __name__ == "__main__":
                                   link_multiplicity_class_weights=link_multiplicity_class_weights, link_multiplicity_focal_weight=lm_focal_weight,
                                   category_class_weights=category_class_weights, category_focal_weight = category_focal_weight,
                                   perform_test_step=perform_test_step, scale_losses = not legacy,
-                                  return_weight_map=return_weight_map)
+                                  return_weight_map=return_loss_mask)
         model = make_model()
         if args.export_only or ( (args.compute_metrics or args.test_predict) and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
@@ -325,9 +332,9 @@ if __name__ == "__main__":
         set_to_iterator(iterator, fun)
 
 
-    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, segmentation:bool=True, tracking:bool=True, tridimensional_mode:bool=False, return_weight_map:bool=False):
+    def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, segmentation:bool=True, tracking:bool=True, tridimensional_mode:bool=False, exclusion_weight_map:bool=False):
         metrics_fun_ = get_metrics_fun(scale, category=category_number>1, segmentation=segmentation, tracking=tracking)
-        _wm_offset = 1 if return_weight_map else 0
+        _wm_offset = 1 if exclusion_weight_map else 0
         if tracking:
             assert segmentation
             # output indices: [EDM, CDM, (dZ), dY, dX, LM, Cat, (WeightMap)]
@@ -415,7 +422,9 @@ if __name__ == "__main__":
             segmentation = seg_args.get("segmentation", True)
             category_number = config["model_architecture"].get("category_number", 0)
             category_only = not segmentation and not tracking and category_number > 0
-            train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
+            return_loss_mask = seg_args.get("category_loss_parameters", {}).get("class_balanced_loss_masking", False)
+            category_class_counts = get_category_class_counts(config, category_number, category_keyword=ARRAY_KEYWORDS[1]) if category_number > 1 and return_loss_mask else None
+            train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, category_class_counts=category_class_counts)
             test_param = config.get("test_data_augmentation_parameters", {})
             root_path = "/dataTemp" if os.path.exists("/dataTemp") else "/data"
             file_path = os.path.join(root_path, "test_data_augmentation.h5")
@@ -425,7 +434,6 @@ if __name__ == "__main__":
             if arch_params["frame_window"] == 0:
                 frame_aware = False
             tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
-            _return_wm = seg_args.get("category_frequencies", None) is not None or seg_args.get("return_weight_map", False)
             if segmentation and tracking:
                 if tridimensional_mode:
                     output_name = ["EDM", "CDM", "dZ", "dY", "dX", "LinkMultiplicity", "Category"]
@@ -437,8 +445,8 @@ if __name__ == "__main__":
                 output_name = ["Category"]
             else:
                 raise ValueError("Invalid configuration: allowed mode = segmentation + tracking (+category) / segmentation (+category) / category only")
-            if _return_wm:
-                output_name.append("WeightMap")
+            if category_number > 1 and return_loss_mask:
+                output_name.append("LossMask")
             idx = test_param.get("batch_index", -1)
             if idx < 0 or idx >= len(train_it):
                 idx = random.randint(0, len(train_it)-1)
@@ -509,7 +517,7 @@ if __name__ == "__main__":
             model = init_model(False)
             model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
             predict_fun = lambda x: model(x, training=False)
-            hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False, hsm=True)
+            hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False, hsm=True) # do not return loss mask
             configure_metrics_iterator(hsm_it)
             hard_sample_mining_param = t_p.get("hard_sample_mining", {})
             scale = hard_sample_mining_param.get("scale", hard_sample_mining_param.get("center_scale", 4) * 2) if hard_sample_mining_param is not None else 8
@@ -518,8 +526,8 @@ if __name__ == "__main__":
             segmentation = seg_args.get("segmentation", True)
             category_number = config["model_architecture"].get("category_number", 0)
             tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
-            _return_wm = seg_args.get("category_frequencies", None) is not None or seg_args.get("return_weight_map", False)
-            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode, return_weight_map=_return_wm), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+            category_only = not segmentation and not tracking and category_number > 0
+            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode, exclusion_weight_map=False), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
             if isinstance(batch_size, (list, tuple)):
                 tile_column = np.concatenate([np.tile(np.arange(n_t), b_s) for b_s, n_t in zip(batch_size, n_tiles)], axis=0)
             else:
@@ -539,8 +547,10 @@ if __name__ == "__main__":
             #print(f"shm n files: {get_shm_nfiles()}")
             np.savetxt(path, metrics, delimiter=";", header=header)
         else: # training
-            train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE)
-            val_it = get_iterator(config, init_iterator, step_number=VAL_STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TEST")
+            category_number = config["model_architecture"].get("category_number", 0)
+            category_class_counts = get_category_class_counts(config, category_number, category_keyword=ARRAY_KEYWORDS[1]) if category_number > 1 else None
+            train_it = get_iterator(config, init_iterator, step_number=STEP_NUMBER, shuffle=SHUFFLE, category_class_counts = category_class_counts)
+            val_it = get_iterator(config, init_iterator, step_number=VAL_STEP_NUMBER, shuffle=SHUFFLE, dataset_type="TEST", category_class_counts = category_class_counts)
             # Define the training distribution strategy
             if args.strategy == "multiworker-slurm":
                 # build multi-worker environment from Slurm variables
@@ -574,7 +584,7 @@ if __name__ == "__main__":
             print("init model...", flush=True)
 
             with strategy.scope():
-                model = init_model(training=True)
+                model = init_model(training=True, category_class_counts=category_class_counts)
                 learning_rate = CosineDecayResume(initial_learning_rate=LR,
                                             min_lr=MIN_LR,
                                             decay_steps=STEP_NUMBER * N_EPOCHS,
@@ -615,15 +625,15 @@ if __name__ == "__main__":
                 scale = hard_sample_mining_param.get("scale", hard_sample_mining_param.get("center_scale", 4) * 2)
                 start_from = hard_sample_mining_param.get("start_from_epoch", 0)
                 print("init hsm iterator...", flush=True)
-                hsm_it = get_iterator(config, init_iterator, existing_iterator=train_it, step_number=0, shuffle=False, hsm=True) # needs to be a different iterator as iterator.return_central_only
+                hsm_it = get_iterator(config, init_iterator, existing_iterator=train_it, step_number=0, shuffle=False, hsm=True) # needs to be a different iterator as iterator.return_central_only. do not return loss mask
                 configure_metrics_iterator(hsm_it)
                 seg_args = config.get("segmentation", {})
                 tracking = seg_args.get("tracking", not seg_args.get("segment_only", False))
                 segmentation = seg_args.get("segmentation", True)
                 arch_params = config["model_architecture"]
                 tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
-                _return_wm = seg_args.get("category_frequencies", None) is not None or seg_args.get("return_weight_map", False)
-                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = arch_params.get("category_number", 0), segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode, return_weight_map=_return_wm), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
+                category_number = arch_params.get("category_number", 0)
+                hsm_cb = HardSampleMiningCallback(hsm_it, train_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode, exclusion_weight_map=False), n_epochs=N_EPOCHS, period=period, start_epoch=0, start_from_epoch=start_from, enrich_factor=hard_sample_mining_param.get("enrich_factor", 100), quantile_max=hard_sample_mining_param.get("quantile_max", None), quantile_min=hard_sample_mining_param.get("quantile_min", None), verbose=2)
                 callbacks.append(hsm_cb)
             else:
                 hsm_it = None

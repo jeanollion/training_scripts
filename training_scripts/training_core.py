@@ -303,6 +303,21 @@ def compute_category_weights(class_counts:list, power_law:float=1, max_weight = 
             class_weights[category] = min( class_weights[category], max_weight)
     return np.array(class_weights)
 
+def compute_category_keep_probabilities(class_counts:list, power_law:float=1):
+    # compute weights
+    total_samples = sum(class_counts)
+    num_classes = len(class_counts)
+    keep_prob = [1]*num_classes
+    category_frequencies = np.array(class_counts, dtype=np.float64) / total_samples
+    assert category_frequencies.ndim == 1, "category_frequencies must be a 1D array"
+    min_freq = np.min(category_frequencies[category_frequencies > 0])
+    # keep_probability: rarest category = 1.0, more common categories < 1.0
+    keep_prob = min_freq / np.maximum(category_frequencies, 1e-10)
+    if power_law is not None and power_law != 1:
+        assert power_law >= 0, "invalid power law"
+        keep_prob = np.power(keep_prob, power_law)
+    return keep_prob
+
 def check_requirements(requires:list):
     for req in requires:
         try:
