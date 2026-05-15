@@ -213,7 +213,8 @@ if __name__ == "__main__":
                                return_loss_mask=return_loss_mask,
                                category_keep_probabilities=category_keep_probabilities,
                                group_keyword=ds_conf.get("keyword", None),
-                               batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun, return_edm_derivatives=seg_args.get("edm_derivatives", True),
+                               batch_size=batch_size, step_number=step_number, extract_tile_function=extract_tiles_fun,
+                               return_edm_derivatives=seg_args.get("edm_derivatives", False), return_cdm_derivatives=False, # no need to return cdm derivatives: computed at train time
                                aug_frame_subsampling=data_aug_params.get("frame_subsampling", 1), shuffle=kwargs.get("shuffle", True),
                                **iterator_params)
 
@@ -333,15 +334,19 @@ if __name__ == "__main__":
 
 
     def metrics_fun(scale, frame_window, category_number:int=0, long_range:bool=True, segmentation:bool=True, tracking:bool=True, tridimensional_mode:bool=False, exclusion_weight_map:bool=False):
-        metrics_fun_ = get_metrics_fun(scale, category=category_number>1, segmentation=segmentation, tracking=tracking)
+        metrics_fun_ = get_metrics_fun(scale, category=category_number>1, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode)
         _wm_offset = 1 if exclusion_weight_map else 0
         if tracking:
             assert segmentation
-            # output indices: [EDM, CDM, (dZ), dY, dX, LM, Cat, (WeightMap)]
+            # output indices: [EDM, CDM, (dZ), dY, dX, LM, Cat, label, prev label, center object, (WeightMap)]
+            dz_idx = 2
             dy_idx = 3 if tridimensional_mode else 2
             dx_idx = 4 if tridimensional_mode else 3
             lm_idx = 5 if tridimensional_mode else 4
             cat_idx = 6 if tridimensional_mode else 5
+            label_idx = -3 - _wm_offset
+            prev_label_idx = -2 - _wm_offset
+            center_idx = - 1 - _wm_offset
             def fun(y_true, y_pred):
                 fw = frame_window
                 n_frame_pairs = fw * 2
@@ -350,20 +355,32 @@ if __name__ == "__main__":
                 d_indices = [fw - 1, n_frame_pairs + fw] # BW & FW (verified)
                 lm_indices = [d_indices[0] * 3 + i for i in range(3)] + [d_indices[1] * 3 + i for i in range(3)] # BW & FW (link multiplicity: 3 categories each: single, multiple, null)
                 return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1], y_pred[cat_idx][..., fw*category_number:(fw+1)*category_number] if category_number>1 else None,
+                                    tf.gather(y_pred[dz_idx], indices=d_indices, axis=-1) if tridimensional_mode else None,
                                     tf.gather(y_pred[dy_idx], indices=d_indices, axis=-1),
                                     tf.gather(y_pred[dx_idx], indices=d_indices, axis=-1),
-                                    tf.gather(y_pred[lm_idx], indices=lm_indices, axis=-1), y_true[0], y_true[cat_idx] if category_number>1 else None, y_true[dy_idx], y_true[dx_idx],
-                                    y_true[lm_idx], y_true[-3 - _wm_offset], y_true[-2 - _wm_offset], y_true[-1 - _wm_offset])
+                                    tf.gather(y_pred[lm_idx], indices=lm_indices, axis=-1),
+                                    y_true[0][..., :1], # in case iterator returns edm derivatives
+                                    y_true[cat_idx] if category_number>1 else None,
+                                    y_true[dy_idx] if tridimensional_mode else None, y_true[dy_idx], y_true[dx_idx],
+                                    y_true[lm_idx],
+                                    y_true[label_idx], y_true[prev_label_idx], y_true[center_idx]) # label, prev_label, centerobject
         elif segmentation:
+            # output indices: [EDM, CDM, Cat, label, center object, (WeightMap)]
+            label_idx = -2 - _wm_offset
+            center_idx = - 1 - _wm_offset
             def fun(y_true, y_pred):
                 fw = frame_window
                 return metrics_fun_(y_pred[0][..., fw:fw + 1], y_pred[1][..., fw:fw + 1], y_pred[2][..., fw*category_number:(fw+1)*category_number] if category_number>1 else None,
-                                    y_true[0], y_true[2] if category_number>1 else None, y_true[-2 - _wm_offset], y_true[-1 - _wm_offset])
-        else:
+                                    y_true[0][..., :1], # in case iterator returns edm derivatives
+                                    y_true[2] if category_number>1 else None,
+                                    y_true[label_idx], y_true[center_idx]) # label, center_object
+        else: # category only
             assert category_number > 1, f"category_number {category_number} must be > 1"
+            label_idx = -2 - _wm_offset
+            center_idx = - 1 - _wm_offset
             def fun(y_true, y_pred):
                 fw = frame_window
-                return metrics_fun_(y_pred[0][..., fw*category_number:(fw+1)*category_number], y_true[1], y_true[-2 - _wm_offset], y_true[-1 - _wm_offset])
+                return metrics_fun_(y_pred[0][..., fw*category_number:(fw+1)*category_number], y_true[1], y_true[label_idx], y_true[center_idx])
         return fun
 
 
@@ -481,14 +498,10 @@ if __name__ == "__main__":
             train_it.close()
             transpose_axis = [5, 0, 1, 2, 3, 4] if tridimensional_mode else [4, 0, 1, 2, 3]
             cnames, lnames = get_input_channel_and_label(config, True)
-            if len(cnames) + len(lnames) > 1:
-                inputs = transpose_list(inputs)  # (n_it, n_in) -> (n_in, n_it)
-                inputs = [np.transpose(np.stack(i, 0), transpose_axis) for i in inputs]
-                input_names = cnames + [f"{ln}_{'EDM' if i == 0 else 'CDM'}" for ln in lnames for i in range(2)]
-            else:
-                inputs = np.stack(inputs, 0)
-                inputs = [np.transpose(inputs, transpose_axis)]
-                input_names = cnames
+
+            inputs = transpose_list(inputs)  # (n_it, n_in) -> (n_in, n_it)
+            inputs = [np.transpose(np.stack(i, 0), transpose_axis) for i in inputs]
+            input_names = cnames + [f"{ln}_{'EDM' if i == 0 else 'CDM'}" for ln in lnames for i in range(2)]
 
             if len(outputs)>0:
                 if len(output_name) > 1 or isinstance(outputs[0], (list, tuple)):
