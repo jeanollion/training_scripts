@@ -5,7 +5,7 @@ import json
 import argparse
 import random
 import numpy as np
-import tensorflow as tf
+from tensorflow.keras.models import load_model
 import h5py
 import copy
 from importlib.metadata import version
@@ -20,10 +20,9 @@ from ssnb_denoising.models import get_dnet, get_dnet_multiframe, get_convolution
 from ssnb_denoising.models.dnet_n2n import get_dnet_n2n
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, check_requirements, \
     compare_versions, print_requirement_error
-from tensorflow.keras.models import load_model
 
 __VERSION__ = '1.0.3'
-__REQUIRES__ = ["dataset_iterator>=0.5.1", "ssnb_denoising>=0.1.1" ]
+__REQUIRES__ = ["dataset_iterator>=0.5.1", "ssnb_denoising>=0.0.1" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -116,12 +115,12 @@ if __name__ == "__main__":
                 scale_s = f.read()
                 scale = json.loads(scale_s)
                 return [scale["center"], scale["scale"]]
-        scaling_parameters = config["dataset_parameters"].get("scaling_parameters", {"mode":"MODE_PERCENTILE", "percentile":95})
+        scaling_parameters = config["dataset_parameters"].get("scaling_parameters", {"mode":"MODE_PERCENTILE", "percentile":99})
         if scaling_parameters["mode"]=="CONSTANT":
             return [scaling_parameters["center"], scaling_parameters["scale"]]
         elif scaling_parameters["mode"]=="MODE_PERCENTILE":
             mode_percentile_count = []
-            percentile = scaling_parameters.get("percentile", 95)
+            percentile = scaling_parameters.get("percentile", 99)
             for ds_conf in config["dataset_list"]:
                 if ds_conf.get("type", "TRAIN") == dataset_type:
                     mode_percentile_count.append(get_center_scale(ds_conf["path"], ds_conf.get("channel_name", "raw"), ds_conf.get("keyword", None), method="mode-percentile", percentile=percentile, return_count=True))
@@ -206,7 +205,8 @@ if __name__ == "__main__":
             dnet_rev = None if not MOVIE_TRAINING else get_dnet_n2n(depth=depth, input_channels=CHANNEL_NUMBER if CHANNEL_NUMBER > 1 else 2 * n_frames + 1, name = "dnet_n2n_rev", **arch_args)
         else:
             raise ValueError(f"Unknown architecture: {arch_type}")
-        print(f"using dnet_rev: {dnet_rev is not None}")
+        if dnet_rev is not None:
+            print(f"using dnet_rev")
         denoiser = BlindDenoiser(n_components, basename=MODEL_NAME, dnet=dnet, nnet_kwargs=nnet_args, dnet_rev=dnet_rev,
                                  convolution=get_convolution(PSF), noise_correlation_kernel = NOISE_CORRELATION_KERNEL, renoise_correlation_range=NOISE_CORRELATION_RANGE, noise_conv_regularization=DENOISING_PARAMETERS.get("noise_conv_regularization", 0),
                                  train_on_central_channel_only=False, dark_noise_sigma=dark_noise_sigma)
@@ -235,7 +235,8 @@ if __name__ == "__main__":
         else:
             denoiser.set_flip_invariance(False, False, 1)
         #tf.saved_model.save(denoiser.get_inference_model(central_output_channel=True), path)
-        denoiser.get_inference_model(central_output_channel=False).save(path, include_optimizer=False, save_traces=True)
+        inf_model = denoiser.get_inference_model(central_output_channel=False)
+        inf_model.save(path, include_optimizer=False, save_traces=True)
 
     CHANNEL_NUMBER = get_dataset_channel_number(CONFIG)
     if args.export_only:
