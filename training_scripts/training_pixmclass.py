@@ -86,7 +86,7 @@ if __name__ == "__main__":
     WORKERS = min(os.cpu_count(), WORKERS)
     SHUFFLE = not args.test_data_augmentation
     START_EPOCH = t_p.get("start_epoch", 0)
-
+    TRIDIMENSIONAL_MODE = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
     print(f"configuration file found. ")
 
     def init_iterator(ds_conf, step_number, dataset=None, dataset_type="TRAIN", **kwargs):
@@ -121,10 +121,13 @@ if __name__ == "__main__":
 
         batch_size = ds_conf["batch_size"]
         tiling_parameters = ds_conf.get("tiling_parameters", None)
+
         it = pmt.get_iterator(dataset, memory_persistent=memory_persistent, scaling_data_generator=scaling_data_generators, illumination_data_generator=illumination_generator,
                                 input_channel_keywords=channel_names, class_keyword=classes_name,
                                 train_group_keyword=ds_conf.get("keyword", None),
-                                tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number, dtype="float32", shuffle=kwargs.get("shuffle", True),
+                                tiling_parameters=tiling_parameters, batch_size=batch_size, step_number=step_number,
+                                tridimensional_mode = TRIDIMENSIONAL_MODE,
+                                dtype="float32", shuffle=kwargs.get("shuffle", True),
                                 elasticdeform_parameters=data_aug_params.get("elasticdeform_parameters", None)
                                 )
         if dataset_type=="TRAIN":
@@ -136,7 +139,8 @@ if __name__ == "__main__":
             return it
 
     def init_model(**kwargs):
-        model = get_model(**kwargs)
+        input_shape = config.get("dataset_parameters", {}).get("input_shape", [None, None])
+        model = get_model(tridimensional_mode=TRIDIMENSIONAL_MODE, input_shape=input_shape, **kwargs)
         if args.export_only:
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
@@ -225,7 +229,7 @@ if __name__ == "__main__":
                     outputs.append(output)
                 print(f"{i + 1}/{n_iterations}", flush=True)
 
-            transpose_axis = [0, 1, 4, 2, 3]
+            transpose_axis = [0, 1, 5, 2, 3, 4] if TRIDIMENSIONAL_MODE else [0, 1, 4, 2, 3]
             input = []
             for i in range(N_INPUTS):
                 local_input = np.stack([in_[i] for in_ in inputs], 1)
@@ -234,12 +238,20 @@ if __name__ == "__main__":
             if not input_only:
                 output = np.stack(outputs, 1)
                 output = np.transpose(output, transpose_axis)
+                if TRIDIMENSIONAL_MODE:
+                    output_mask = output[:, :, 1]
+                    output = output[:, :, 0] # remove channel axis
+            if TRIDIMENSIONAL_MODE: # remove channel axis
+                input = [a[:, :, 0] for a in input]
+
             print(f"writing {len(outputs) + N_INPUTS } x {input[0].shape} to file: {file_path}", flush=True)
             with h5py.File(file_path, mode='w') as h5pyFile :
                 for i in range(N_INPUTS):
                     h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input{i}", data=input[i])
                 if not input_only:
                     h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output", data=output)
+                    if TRIDIMENSIONAL_MODE:
+                        h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output_mask", data=output_mask)
             if (os.path.exists("/dataTemp")):
                 print(f"dataTemp exists ! {os.listdir('/dataTemp')}", flush=True)
         else:
