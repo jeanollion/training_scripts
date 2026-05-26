@@ -437,8 +437,17 @@ if __name__ == "__main__":
             mean_losses = [np.mean(acc_losses[k]) for k in losses_names]
             print(f"loss scales init values: {[float(m) for m in mean_losses]}", flush=True)
         else:
+            # steps == 0: skip loss-scale measurement but still apply the seed=42
+            # weight reinit. The reinit collapses inter-layer kernel independence
+            # (every layer gets a fresh Glorot(seed=42), all starting from RNG
+            # state 0 -> scaled copies of the same base pattern). With per-layer
+            # normalization this acts as an orthogonal/identity-style warm-up and
+            # consistently speeds up early training.
+            print("reinitializing weights (skipping loss scale measurement)...", flush=True)
+            reinitialize_weights(model)
             mean_losses = [1] * len(losses_names)
-        model.loss_scales.assign(mean_losses)
+        if isinstance(getattr(model, "loss_scales", None), tf.Variable):
+            model.loss_scales.assign(mean_losses)
 
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)}) fp16: {args.export_fp16}", flush=True)
@@ -634,7 +643,13 @@ if __name__ == "__main__":
                 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate, beta_1=beta_1, beta_2=beta_2, epsilon=EPSILON))
 
                 if LOAD_WEIGHT_PATH is None:
-                    init_loss_scales(model, train_it, steps=30)
+                    # steps>0 : measure per-head loss means AND apply seed=42 weight
+                    #          reinit during the measurement loop.
+                    # steps==0: skip measurement, only apply the (beneficial) reinit.
+                    # steps<0 : skip entirely (no reinit, no scales).
+                    init_loss_scales_steps = config["training_parameters"].get("init_loss_scales_steps", 30)
+                    if init_loss_scales_steps >= 0:
+                        init_loss_scales(model, train_it, steps=init_loss_scales_steps)
 
             # perform training
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=False, save_weights_only=True)
