@@ -386,7 +386,7 @@ if __name__ == "__main__":
                                     tf.gather(y_pred[lm_idx], indices=lm_indices, axis=-1),
                                     y_true[0][..., :1], # in case iterator returns edm derivatives
                                     y_true[cat_idx] if category_number>1 else None,
-                                    y_true[dy_idx] if tridimensional_mode else None, y_true[dy_idx], y_true[dx_idx],
+                                    y_true[dz_idx] if tridimensional_mode else None, y_true[dy_idx], y_true[dx_idx],
                                     y_true[lm_idx],
                                     y_true[label_idx], y_true[prev_label_idx], y_true[center_idx]) # label, prev_label, centerobject
         elif segmentation:
@@ -409,14 +409,14 @@ if __name__ == "__main__":
         return fun
 
 
-    def init_loss_scales(model, train_it, steps:int=30):
+    def init_loss_scales(model, train_it, steps:int=30, reinit_independent:bool=False):
         if len(model.get_sub_losses_names()) == 1:
             return
         steps = min(len(train_it), steps)
         losses_names = model.get_sub_losses_names()
         acc_losses = {k: [] for k in losses_names}
         if steps>0:
-            print("initializing loss scales...", flush=True)
+            print(f"initializing loss scales (reinit independent={reinit_independent})...", flush=True)
             @tf.function
             def run_batch(model, data):
                 return model.test_step(data)
@@ -429,7 +429,7 @@ if __name__ == "__main__":
                 print(f"{i+1}/{steps}", flush=True)
                 losses = run_batch(model, data)
                 if i%3==0:
-                    reinitialize_weights(model)
+                    reinitialize_weights(model, independent=reinit_independent)
                 for k in losses_names:
                     acc_losses[k].append(losses[k])
             enq.stop()
@@ -437,14 +437,15 @@ if __name__ == "__main__":
             mean_losses = [np.mean(acc_losses[k]) for k in losses_names]
             print(f"loss scales init values: {[float(m) for m in mean_losses]}", flush=True)
         else:
-            # steps == 0: skip loss-scale measurement but still apply the seed=42
-            # weight reinit. The reinit collapses inter-layer kernel independence
-            # (every layer gets a fresh Glorot(seed=42), all starting from RNG
-            # state 0 -> scaled copies of the same base pattern). With per-layer
-            # normalization this acts as an orthogonal/identity-style warm-up and
-            # consistently speeds up early training.
-            print("reinitializing weights (skipping loss scale measurement)...", flush=True)
-            reinitialize_weights(model)
+            # steps == 0: skip loss-scale measurement but still apply the weight reinit.
+            # With independent=False (default), every layer's seeded initializer is rebuilt
+            # with the same base seed -> all layers draw scaled copies of the same base
+            # pattern (inter-layer correlation ~1). Combined with per-layer normalization
+            # this acts as an orthogonal/identity-style warm-up and accelerates early
+            # training. With independent=True, each weight gets a unique seed and the
+            # reinit produces a regular (uncorrelated) random init, reproducible across runs.
+            print(f"reinitializing weights (skipping loss scale measurement, independent={reinit_independent})...", flush=True)
+            reinitialize_weights(model, independent=reinit_independent)
             mean_losses = [1] * len(losses_names)
         if isinstance(getattr(model, "loss_scales", None), tf.Variable):
             model.loss_scales.assign(mean_losses)
@@ -643,13 +644,15 @@ if __name__ == "__main__":
                 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate, beta_1=beta_1, beta_2=beta_2, epsilon=EPSILON))
 
                 if LOAD_WEIGHT_PATH is None:
-                    # steps>0 : measure per-head loss means AND apply seed=42 weight
-                    #          reinit during the measurement loop.
-                    # steps==0: skip measurement, only apply the (beneficial) reinit.
+                    # steps>0 : measure per-head loss means AND apply reinit during the loop.
+                    # steps==0: skip measurement, only apply reinit.
                     # steps<0 : skip entirely (no reinit, no scales).
+                    # reinit_independent: False (default) -> correlated scaled-copies init
+                    # (faster early training);  True -> uncorrelated regular random init.
                     init_loss_scales_steps = config["training_parameters"].get("init_loss_scales_steps", 30)
+                    reinit_independent = config["training_parameters"].get("reinit_independent", False)
                     if init_loss_scales_steps >= 0:
-                        init_loss_scales(model, train_it, steps=init_loss_scales_steps)
+                        init_loss_scales(model, train_it, steps=init_loss_scales_steps, reinit_independent=reinit_independent)
 
             # perform training
             checkpoint = SafeModelCheckpoint(WEIGHT_PATH, monitor='val_loss' if val_it is not None and VAL_FREQ==1 else 'loss', verbose=1, save_best_only=False, save_weights_only=True)

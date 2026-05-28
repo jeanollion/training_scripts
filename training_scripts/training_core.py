@@ -333,14 +333,38 @@ def check_requirements(requires:list):
     return True
 
 
-def reinitialize_weights(model, seed=42):
+def reinitialize_weights(model, seed=42, independent=False):
+    """Re-draw every layer's weights from its initializer.
+
+    Args:
+        model: Keras Model/Layer to reinitialize.
+        seed: base seed for reproducibility.
+        independent: if False (default) every seeded initializer is rebuilt with the same
+            base `seed`. Because each fresh `Initializer(seed=...)` instance starts from
+            RNG state 0, all layers draw from the same underlying random sequence — so
+            their weights end up as scaled copies of one base pattern (inter-layer
+            correlation ≈ 1.0). Empirically this acts as an orthogonal/identity-style
+            warm-up and accelerates early training.
+            If True, each seeded initializer instead gets a unique seed (`base_seed +
+            per-weight counter`), producing statistically independent layer weights —
+            equivalent to a fresh random init, just reproducible across runs.
+    """
+    counter = [0]  # mutable, shared across recursion via closure
+    _reinitialize_weights_impl(model, seed, independent, counter)
+
+
+def _reinitialize_weights_impl(model, seed, independent, counter):
     for l in model.layers:
         if isinstance(l, tf.keras.Model):
-            reinitialize_weights(l, seed)
+            _reinitialize_weights_impl(l, seed, independent, counter)
         else:
-            reinitialize_layer_weights(l, seed)
+            reinitialize_layer_weights(l, seed, independent=independent, counter=counter)
 
-def reinitialize_layer_weights(l, seed):
+
+def reinitialize_layer_weights(l, seed, independent=False, counter=None):
+    if counter is None:
+        counter = [0]
+
     def _reinitialize_weight(initializer_name, weight_name):
         if hasattr(l, initializer_name) and hasattr(l, weight_name):
             weight = getattr(l, weight_name)
@@ -352,7 +376,11 @@ def reinitialize_layer_weights(l, seed):
                     sig = inspect.signature(initializer_class.__init__)
                     if 'seed' in sig.parameters:
                         config_with_seed = config.copy()
-                        config_with_seed['seed'] = seed
+                        if independent:
+                            config_with_seed['seed'] = seed + counter[0]
+                            counter[0] += 1
+                        else:
+                            config_with_seed['seed'] = seed
                         new_initializer = initializer_class.from_config(config_with_seed)
                     else:
                         new_initializer = initializer
@@ -366,7 +394,7 @@ def reinitialize_layer_weights(l, seed):
     _reinitialize_weight("embeddings_initializer", "embeddings")
 
     for attribute, value in get_sub_layer_dict(l).items():
-        reinitialize_layer_weights(value, seed)
+        reinitialize_layer_weights(value, seed, independent=independent, counter=counter)
 
 
 def compare_versions(v1, v2):
