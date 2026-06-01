@@ -308,6 +308,7 @@ if __name__ == "__main__":
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights, link_multiplicity_focal_weight=lm_focal_weight,
+                                  link_multiplicity_temperature=lm_loss_params.get("temperature", 1),
                                   category_class_weights=category_class_weights, category_focal_weight = category_focal_weight,
                                   perform_test_step=perform_test_step, scale_losses = not legacy,
                                   return_weight_map=return_loss_mask)
