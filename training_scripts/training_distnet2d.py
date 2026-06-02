@@ -274,7 +274,7 @@ if __name__ == "__main__":
         tracking_args = config.get("tracking", {})
         lm_loss_params = tracking_args.get("lm_loss_parameters", {})
         if training and tracking and lm_loss_params.get("weight_power_law", 1)>0:
-            link_multiplicity_class_weights = get_link_multiplicity_class_weights(config,  max_weight=50, power_law = lm_loss_params.get("weight_power_law", 1))
+            link_multiplicity_class_weights = get_link_multiplicity_class_weights(config,  max_weight=lm_loss_params.get("max_weight", 50), power_law = lm_loss_params.get("weight_power_law", 1))
             print(f"link multiplicity weights: { {l:float(w) for l,w in zip(['single', 'multiple', 'null'], link_multiplicity_class_weights)} }")
         else:
             link_multiplicity_class_weights = [1, 1, 1]
@@ -282,10 +282,9 @@ if __name__ == "__main__":
         category_number = arch_args.get("category_number", 0)
         cat_loss_params = seg_args.get("category_loss_parameters", {})
         if training and category_number > 1 and cat_loss_params.get("weight_power_law", 1)>0 and category_class_counts is not None:
-            category_class_weights = compute_category_weights(category_class_counts, power_law=cat_loss_params.get("weight_power_law", 1))
+            category_class_weights = compute_category_weights(category_class_counts, power_law=cat_loss_params.get("weight_power_law", 1), max_weight=cat_loss_params.get("max_weight", 0))
         else:
             category_class_weights = [1] * category_number
-        category_focal_weight = cat_loss_params.get("focal_weight", 2)
         return_loss_mask = cat_loss_params.get("class_balanced_loss_masking", False)
         balance_edm_weight = "balance_edm_frequency_parameters" in seg_args
         edm_class_weights = get_edm_class_weights(config, power_law = seg_args["balance_edm_frequency_parameters"].get("weight_power_law", 1)) if training and balance_edm_weight else None
@@ -308,8 +307,9 @@ if __name__ == "__main__":
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights, link_multiplicity_focal_weight=lm_focal_weight,
-                                  link_multiplicity_temperature=lm_loss_params.get("temperature", 1),
-                                  category_class_weights=category_class_weights, category_focal_weight = category_focal_weight,
+                                  link_multiplicity_temperature=lm_loss_params.get("temperature", 0), link_multiplicity_label_smoothing=lm_loss_params.get("label_smoothing", 0),
+                                  category_class_weights=category_class_weights, category_focal_weight = cat_loss_params.get("focal_weight", 2),
+                                  category_temperature=cat_loss_params.get("temperature", 0), category_label_smoothing=cat_loss_params.get("label_smoothing", 0),
                                   perform_test_step=perform_test_step, scale_losses = not legacy,
                                   return_weight_map=return_loss_mask)
         model = make_model()
