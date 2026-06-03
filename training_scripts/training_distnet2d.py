@@ -307,7 +307,7 @@ if __name__ == "__main__":
                                   edm_derivative_loss=seg_args.get("edm_derivatives", True),
                                   cdm_derivative_loss=seg_args.get("cdm_derivatives", True), cdm_loss_radius=cdm_loss_radius,
                                   link_multiplicity_class_weights=link_multiplicity_class_weights, link_multiplicity_focal_weight=lm_focal_weight,
-                                  link_multiplicity_temperature=lm_loss_params.get("temperature", 0), link_multiplicity_label_smoothing=lm_loss_params.get("label_smoothing", 0),
+                                  link_multiplicity_temperature=lm_loss_params.get("temperature", 0), link_multiplicity_pseudo_huber=lm_loss_params.get("pseudo_huber", 0), link_multiplicity_label_smoothing=lm_loss_params.get("label_smoothing", 0),
                                   category_class_weights=category_class_weights, category_focal_weight = cat_loss_params.get("focal_weight", 2),
                                   category_temperature=cat_loss_params.get("temperature", 0), category_label_smoothing=cat_loss_params.get("label_smoothing", 0),
                                   perform_test_step=perform_test_step, scale_losses = not legacy,
