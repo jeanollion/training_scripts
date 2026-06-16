@@ -35,6 +35,7 @@ parser.add_argument("--model_idx", type=int, help="index of model")
 parser.add_argument("--train_only", action="store_true", help="train but no export")
 parser.add_argument("--export_only", action="store_true", help="skip model training and export model")
 parser.add_argument("--test_data_augmentation", action="store_true", help="generate and store example of augmented data")
+parser.add_argument("--test_predict", action="store_true", help="make predictions on evaluation dataset")
 parser.add_argument("--export_dir", type=str, help="directory to export saved model to")
 parser.add_argument("--n_epochs", type=int, help="number of training epochs")
 parser.add_argument("--step_number", type=int, help="number of training steps per epoch")
@@ -61,8 +62,9 @@ if __name__ == "__main__":
     if args.mixed_precision:
         mixed_precision.set_global_policy('mixed_float16')
         print(f"Mixed precision policy= {mixed_precision.global_policy()}")
+    RUN_TEST = args.test_data_augmentation or args.test_predict
     # get parameters
-    config = open_config_file(args.config_dir, args.test_data_augmentation)
+    config = open_config_file(args.config_dir, RUN_TEST)
     t_p = config["training_parameters"]
     model_name = t_p["model_name"] + (f"_{args.model_idx}" if args.model_idx is not None else "")
     WEIGHT_PATH = os.path.join(args.config_dir,  model_name + ".h5")
@@ -84,7 +86,7 @@ if __name__ == "__main__":
     else:
         WORKERS = t_p.get("multiprocessing_workers", 1)
     WORKERS = min(os.cpu_count(), WORKERS)
-    SHUFFLE = not args.test_data_augmentation
+    SHUFFLE = not RUN_TEST
     START_EPOCH = t_p.get("start_epoch", 0)
     TRIDIMENSIONAL_MODE = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
     print(f"configuration file found. ")
@@ -97,7 +99,7 @@ if __name__ == "__main__":
         classes_name = ds_conf.get("classes_name", "classes")
         if dataset is None:
             dataset = ds_conf["path"]
-            memory_persistent = WORKERS > 1 and not args.test_data_augmentation and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
+            memory_persistent = WORKERS > 1 and not RUN_TEST and should_load_dataset_in_shm(dataset, mode=ds_conf.get("shared_memory", "auto"))
         else:
             memory_persistent = isinstance(dataset, MemoryIO)
         if dataset_type=="TRAIN":
@@ -141,11 +143,12 @@ if __name__ == "__main__":
     def init_model(**kwargs):
         input_shape = config.get("dataset_parameters", {}).get("input_shape", [None, None])
         model = get_model(tridimensional_mode=TRIDIMENSIONAL_MODE, input_shape=input_shape, **kwargs)
-        if args.export_only:
+        if args.export_only or (args.test_predict and os.path.exists(WEIGHT_PATH)):
             assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
             model.load_weights(WEIGHT_PATH)
-        elif LOAD_WEIGHT_PATH is not None:
-            assert os.path.exists(LOAD_WEIGHT_PATH), f"weights {LOAD_WEIGHT_PATH} not found"
+            print(f"Weights loaded : {WEIGHT_PATH}", flush=True)
+        elif LOAD_WEIGHT_PATH is not None or args.test_predict:
+            assert LOAD_WEIGHT_PATH is not None and os.path.exists(LOAD_WEIGHT_PATH), f"weights {LOAD_WEIGHT_PATH} not found"
             model.load_weights(LOAD_WEIGHT_PATH)
             print(f"Weights loaded : {LOAD_WEIGHT_PATH}", flush=True)
         return model
@@ -173,8 +176,6 @@ if __name__ == "__main__":
     if args.export_only:
         print(f"export only: init model with weights: {WEIGHT_PATH} (exist: {os.path.exists(WEIGHT_PATH)})")
         model = init_model(**arch_conf)
-        assert os.path.exists(WEIGHT_PATH), f"weights {WEIGHT_PATH} not found"
-        model.load_weights(WEIGHT_PATH)
         # export model
         if args.export_fp16:
             export_fp16_model(model, SAVED_MODEL_PATH)
@@ -206,7 +207,7 @@ if __name__ == "__main__":
         lr_factor = (1 + annotated_pix) / 2
         print(f"Class counts: {class_counts}, class weights: {weights} annotated pixels: {annotated_pix * 100:.3}% corrected LR: {LR / lr_factor}", flush=True)
 
-        if args.test_data_augmentation:
+        if RUN_TEST:
             test_param = config.get("test_data_augmentation_parameters", {})
             input_only = test_param.get("input_only", True)
             n_iterations = test_param.get("iteration_number", 50)
@@ -219,19 +220,30 @@ if __name__ == "__main__":
                 idx = random.randint(0, len(train_it)-1)
             inputs = []
             outputs = []
-            print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
-            for i in range(n_iterations):
-                input, output = train_it[idx]
-                if N_INPUTS == 1:
+            if args.test_data_augmentation:
+                print(f"Generating {n_iterations} versions of sample {idx}", flush=True)
+                for i in range(n_iterations):
+                    input, output = train_it[idx]
+                    if not isinstance(input, (tuple, list)):
+                        input = [input]
+                    inputs.append(input)
+                    if not input_only:
+                        outputs.append(output)
+                    print(f"{i + 1}/{n_iterations}", flush=True)
+            else: # test predict
+                model = init_model(**arch_conf)
+                model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON_RANGE[0]))
+                input, _ = train_it[idx]
+                if not isinstance(input, (tuple, list)):
                     input = [input]
+                output = model.predict(input)
                 inputs.append(input)
-                if not input_only:
-                    outputs.append(output)
-                print(f"{i + 1}/{n_iterations}", flush=True)
+                outputs.append(output)
 
             transpose_axis = [0, 1, 5, 2, 3, 4] if TRIDIMENSIONAL_MODE else [0, 1, 4, 2, 3]
             input = []
             for i in range(N_INPUTS):
+                print(f"input: {i+1}/{N_INPUTS} shape: {[in_[i].shape for in_ in inputs]}")
                 local_input = np.stack([in_[i] for in_ in inputs], 1)
                 local_input = np.transpose(local_input, transpose_axis)
                 input.append(local_input)
@@ -239,8 +251,11 @@ if __name__ == "__main__":
                 output = np.stack(outputs, 1)
                 output = np.transpose(output, transpose_axis)
                 if TRIDIMENSIONAL_MODE:
-                    output_mask = output[:, :, 1]
-                    output = output[:, :, 0] # remove channel axis
+                    if args.test_data_augmentation:
+                        output_mask = output[:, :, 1]
+                        output = output[:, :, 0] # remove channel axis
+                    else: # test predict
+                        output = output[:, :, -1] # only last channel
             if TRIDIMENSIONAL_MODE: # remove channel axis
                 input = [a[:, :, 0] for a in input]
 
@@ -250,7 +265,7 @@ if __name__ == "__main__":
                     h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/input{i}", data=input[i])
                 if not input_only:
                     h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output", data=output)
-                    if TRIDIMENSIONAL_MODE:
+                    if TRIDIMENSIONAL_MODE and args.test_data_augmentation:
                         h5pyFile.create_dataset(f"data_aug/batch_idx{idx}/output_mask", data=output_mask)
             if (os.path.exists("/dataTemp")):
                 print(f"dataTemp exists ! {os.listdir('/dataTemp')}", flush=True)
