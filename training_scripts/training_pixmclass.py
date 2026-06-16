@@ -290,7 +290,7 @@ if __name__ == "__main__":
             print("init model...", flush=True)
             loss_kwargs = {'reduction' : tf.losses.Reduction.NONE} if args.strategy != "" else {}
             #loss = get_weighted_sparse_categorical_crossentropy(weights, dtype="float32", **loss_kwargs)
-            loss = get_weighted_sparse_categorical_tempered_focal_loss(weights, dtype="float32", temperature=loss_parameters.get("temperature", 1), label_smoothing=loss_parameters.get("label_smoothing", 0), focal_weight=loss_parameters.get("focal_weight", 0), **loss_kwargs)
+            loss = get_weighted_sparse_categorical_tempered_focal_loss(weights, dtype="float32", temperature=loss_parameters.get("temperature", 0), pseudo_huber=loss_parameters.get("pseudo_huber", 0), label_smoothing=loss_parameters.get("label_smoothing", 0), focal_weight=loss_parameters.get("focal_weight", 0), **loss_kwargs)
 
             with strategy.scope():
                 model = init_model(**arch_conf)
