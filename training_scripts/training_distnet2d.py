@@ -286,6 +286,7 @@ if __name__ == "__main__":
         cat_loss_params = seg_args.get("category_loss_parameters", {})
         if training and category_number > 1 and cat_loss_params.get("weight_power_law", 1)>0 and category_class_counts is not None:
             category_class_weights = compute_category_weights(category_class_counts, power_law=cat_loss_params.get("weight_power_law", 1), max_weight=cat_loss_params.get("max_weight", 0))
+            print("category weights: ", category_class_weights)
         else:
             category_class_weights = [1] * category_number
         return_loss_mask = cat_loss_params.get("class_balanced_loss_masking", False)
@@ -409,7 +410,7 @@ if __name__ == "__main__":
             center_idx = - 1 - _wm_offset
             def fun(y_true, y_pred):
                 fw = frame_window
-                return metrics_fun_(y_pred[0][..., fw*category_number:(fw+1)*category_number], y_true[1], y_true[label_idx], y_true[center_idx])
+                return metrics_fun_(y_pred[..., fw*category_number:(fw+1)*category_number], y_true[0], y_true[label_idx], y_true[center_idx])
         return fun
 
 
@@ -568,7 +569,11 @@ if __name__ == "__main__":
             model = init_model(False)
             model.compile(optimizer=tf.keras.optimizers.Adam(LR, epsilon=EPSILON))
             predict_fun = lambda x: model(x, training=False)
-            hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False, hsm=True) # do not return loss mask
+            hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False, dataset_type="EVAL", hsm=True) # hsm=True -> do not return loss mask
+            if hsm_it is None:
+                hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False, dataset_type="TEST", hsm=True)
+            if hsm_it is None:
+                hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False, dataset_type="TRAIN", hsm=True)
             configure_metrics_iterator(hsm_it)
             hard_sample_mining_param = t_p.get("hard_sample_mining", {})
             scale = hard_sample_mining_param.get("scale", hard_sample_mining_param.get("center_scale", 4) * 2) if hard_sample_mining_param is not None else 8
@@ -583,9 +588,13 @@ if __name__ == "__main__":
                 tile_column = np.concatenate([np.tile(np.arange(n_t), b_s) for b_s, n_t in zip(batch_size, n_tiles)], axis=0)
             else:
                 tile_column = np.tile(np.arange(n_tiles), batch_size)
-            header = "IoU;FPD;CenterPosition;CenterValue" #
+            header = ""
+            if segmentation:
+                header += "IoU;FPD;CenterPosition;CenterValue"
             if category_number > 1:
-                header +=";Category"
+                if segmentation:
+                    header += ";"
+                header +="Category"
             if tracking:
                 header += ";DisplacementL2;LinkMultiplicity"
             if np.any(tile_column != 0):
