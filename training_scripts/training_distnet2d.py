@@ -93,6 +93,8 @@ if __name__ == "__main__":
     if args.mixed_precision:
         mixed_precision.set_global_policy('mixed_float16')
         print(f"Mixed precision policy= {mixed_precision.global_policy()}")
+    for gpu in  tf.config.list_physical_devices('GPU'):
+        tf.config.experimental.set_memory_growth(gpu, True)
     RUN_TEST = args.test_data_augmentation or args.test_predict
     # get parameters
     config = open_config_file(args.config_dir, RUN_TEST)
@@ -310,7 +312,7 @@ if __name__ == "__main__":
                                   link_multiplicity_class_weights=link_multiplicity_class_weights, link_multiplicity_focal_weight=lm_focal_weight,
                                   link_multiplicity_temperature=lm_loss_params.get("temperature", 0), link_multiplicity_pseudo_huber=lm_loss_params.get("pseudo_huber", 0), link_multiplicity_label_smoothing=lm_loss_params.get("label_smoothing", 0),
                                   category_class_weights=category_class_weights, category_focal_weight = cat_loss_params.get("focal_weight", 2),
-                                  category_temperature=cat_loss_params.get("temperature", 0), category_label_smoothing=cat_loss_params.get("label_smoothing", 0),
+                                  category_temperature=cat_loss_params.get("temperature", 0), category_pseudo_huber=cat_loss_params.get("pseudo_huber", 0), category_label_smoothing=cat_loss_params.get("label_smoothing", 0),
                                   perform_test_step=perform_test_step, scale_losses = not legacy,
                                   return_weight_map=return_loss_mask)
         model = make_model()
@@ -718,7 +720,7 @@ if __name__ == "__main__":
                     shm = get_shm_info()
                     if shm is not None and shm[2] < 1:
                         print( f"Warning: available shared memory is low: {shm[2]:.2f}/{shm[0]:.2f}G, this can hamper multiprocessing", force=True)
-                    enq = OrderedEnqueuerCF(train_it, shuffle=True, name="main")
+                    enq = OrderedEnqueuerCF(train_it, shuffle=True, name="main", log_resources=True)
                     if hsm_cb is not None:
                         hsm_cb.set_enqueuer(enq)
 
