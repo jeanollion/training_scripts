@@ -110,7 +110,8 @@ def should_load_dataset_in_shm(dataset, mode:str= "auto", min_free_shm_gb:float=
 
 DATASET_TYPES = ["TRAIN", "TEST", "EVAL"]
 def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TRAIN", **kwargs):
-    assert dataset_type in DATASET_TYPES, f"type must be in {DATASET_TYPES}"
+    if dataset_type is not None:
+        assert dataset_type in DATASET_TYPES, f"type must be in {DATASET_TYPES}"
     if existing_iterator is not None:
         existing_iterator.open()
         datasetIO_list = []
@@ -124,7 +125,8 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
     else:
         datasetIO_list = None
     step_number = kwargs.pop("step_number", config["training_parameters"]["step_number"])
-    kwargs["dataset_type"] = dataset_type
+    if dataset_type is not None:
+        kwargs["dataset_type"] = dataset_type
     hsm = kwargs.pop("hsm", False)
     input_shape = config["dataset_parameters"].get("input_shape", None)
     if input_shape is not None and isinstance(input_shape, int):
@@ -133,7 +135,7 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
     ds_list_conf = copy.deepcopy(config["dataset_list"]) # do not modify configuration
     i=0
     for ds_conf in ds_list_conf:
-        if ds_conf.get("type", "TRAIN") == dataset_type:
+        if dataset_type is None or ds_conf.get("type", "TRAIN") == dataset_type:
             batch_size = config["dataset_parameters"]["batch_size"]
             tiling_parameters = ds_conf.get("tiling_parameters", None)
             if tiling_parameters is not None: # adjust n_tiles and batch size to match target batch_size
@@ -177,7 +179,7 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
     i=0
     iterator_list, concat_proportion = [], []
     for ds_conf in ds_list_conf:
-        if ds_conf.get("type", "TRAIN") == dataset_type:
+        if dataset_type is None or ds_conf.get("type", "TRAIN") == dataset_type:
             it = init_iterator(ds_conf, step_number=0 if concat else step_number, dataset=None if datasetIO_list is None else datasetIO_list[i], **kwargs)
             iterator_list.append(it)
             concat_proportion.append(ds_conf.get("concat_proportion", 1))
