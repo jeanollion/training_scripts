@@ -213,9 +213,10 @@ if __name__ == "__main__":
         dataset_parameters = config.get("dataset_parameters", {})
         tridimensional_mode = len(dataset_parameters.get("input_shape", [None, None])) == 3
         z_radius = dataset_parameters.get("z_radius", 1.)
+        hsm = kwargs.get("hsm", False)
         if category_number > 1 and category_class_counts is not None:
             cat_loss_param = seg_args.get("category_loss_parameters", {})
-            return_loss_mask = cat_loss_param.get("class_balanced_loss_masking", False)
+            return_loss_mask = cat_loss_param.get("class_balanced_loss_masking", False) and not hsm
             if return_loss_mask:
                 category_keep_probabilities = compute_category_keep_probabilities( category_class_counts, power_law=cat_loss_param.get("weight_power_law", 1)) if return_loss_mask else None
             else:
@@ -326,7 +327,7 @@ if __name__ == "__main__":
 
             print(f"Weights loaded : {WEIGHT_PATH}", flush=True)
         elif LOAD_WEIGHT_PATH is not None or args.compute_metrics or args.test_predict :
-            assert os.path.exists(LOAD_WEIGHT_PATH), f"weights {LOAD_WEIGHT_PATH} not found"
+            assert LOAD_WEIGHT_PATH is not None and os.path.exists(LOAD_WEIGHT_PATH), f"weights {LOAD_WEIGHT_PATH} not found"
             if os.path.isdir(LOAD_WEIGHT_PATH):
                 loaded_model = tf.keras.models.load_model(LOAD_WEIGHT_PATH)
                 try:
