@@ -90,7 +90,7 @@ if __name__ == "__main__":
             print(f"distnet2d commit: unknown ({e})")
 
     print(f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; DiSTNet2D version: {version('DiSTNet2D')}  tensorflow : {tf.__version__} python: {platform.python_version()}")
-    if args.mixed_precision:
+    if args.mixed_precision and ( not args.export_only or args.export_fp16 ):
         mixed_precision.set_global_policy('mixed_float16')
         print(f"Mixed precision policy= {mixed_precision.global_policy()}")
     for gpu in  tf.config.list_physical_devices('GPU'):
@@ -769,6 +769,9 @@ if __name__ == "__main__":
                         else SAVED_MODEL_PATH + "_tmp_" + os.environ.get("SLURM_PROCID", "")
                     )
                     if is_chief:
+                        if args.mixed_precision and not args.export_fp16: # need to re-init model in FP32 precision
+                            mixed_precision.set_global_policy('float32')
+                            model = init_model(training=False)
                         model.load_weights(WEIGHT_PATH)  # reload best weights
                     if args.export_fp16:
                         export_fp16_model(model, save_path)
@@ -785,6 +788,9 @@ if __name__ == "__main__":
                         print(f"cleaning temp models at {save_path}", flush=True)
                         shutil.rmtree(save_path)  # clean up for non chief worker
                 else:
+                    if args.mixed_precision and not args.export_fp16:  # need to re-init model in FP32 precision
+                        mixed_precision.set_global_policy('float32')
+                        model = init_model(training=False)
                     model.load_weights(WEIGHT_PATH)  # reload best weights
                     if args.export_fp16:
                         export_fp16_model(model, SAVED_MODEL_PATH)
