@@ -59,7 +59,7 @@ if __name__ == "__main__":
             print_requirement_error()
             sys.exit(1)
     print( f"Script version: {__VERSION__}; dataset_iterator version: {version('dataset_iterator')}; PixMClass version: {version('PixMClass')}")
-    if args.mixed_precision:
+    if args.mixed_precision and ( not args.export_only or args.export_fp16 ):
         mixed_precision.set_global_policy('mixed_float16')
         print(f"Mixed precision policy= {mixed_precision.global_policy()}")
     RUN_TEST = args.test_data_augmentation or args.test_predict
@@ -376,6 +376,9 @@ if __name__ == "__main__":
                     )
                     if is_chief:
                         model.load_weights(WEIGHT_PATH)  # reload best weights
+                        if args.mixed_precision and not args.export_fp16: # need to re-init model in FP32 precision
+                            mixed_precision.set_global_policy('float32')
+                            model = init_model(**arch_conf)
                     save_path = (
                         SAVED_MODEL_PATH
                         if is_chief
@@ -392,6 +395,9 @@ if __name__ == "__main__":
                         print(f"cleaning temp models at {save_path}", flush=True)
                         shutil.rmtree(save_path)  # clean up for non chief worker
                 else:
+                    if args.mixed_precision and not args.export_fp16:  # need to re-init model in FP32 precision
+                        mixed_precision.set_global_policy('float32')
+                        model = init_model(**arch_conf)
                     model.load_weights(WEIGHT_PATH)  # reload best weights
                     if args.export_fp16:
                         export_fp16_model(model, SAVED_MODEL_PATH)
