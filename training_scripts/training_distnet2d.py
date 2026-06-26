@@ -574,7 +574,19 @@ if __name__ == "__main__":
                 hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False, dataset_type="TEST", hsm=True)
             if hsm_it is None:
                 hsm_it = get_iterator(config, init_iterator, step_number=0, shuffle=False, dataset_type="TRAIN", hsm=True)
+
+            def disp_tensor(tensor):
+                if isinstance(tensor, tuple):
+                    return f"({[f'{t.shape}({t.dtype})' for t in tensor]})"
+                if isinstance(tensor, list):
+                    return f"[{[f'{t.shape}({t.dtype})' for t in tensor]}]"
+                else:
+                    return f"{tensor.shape}({tensor.dtype})"
+
             configure_metrics_iterator(hsm_it)
+            #in_, true_ = hsm_it[0]
+            #pred_ = model.predict(in_)
+            #print(f"input: {disp_tensor(in_)} true: {disp_tensor(true_)} pred_: {disp_tensor(pred_)}", flush=True)
             hard_sample_mining_param = t_p.get("hard_sample_mining", {})
             scale = hard_sample_mining_param.get("scale", hard_sample_mining_param.get("center_scale", 4) * 2) if hard_sample_mining_param is not None else 8
             seg_args = config.get("segmentation", {})
@@ -583,7 +595,7 @@ if __name__ == "__main__":
             category_number = config["model_architecture"].get("category_number", 0)
             tridimensional_mode = len(config.get("dataset_parameters", {}).get("input_shape", [None, None])) == 3
             category_only = not segmentation and not tracking and category_number > 0
-            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 3), category_number = category_number, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode, exclusion_weight_map=False), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
+            metrics, (batch_size, n_tiles) = compute_metrics(hsm_it, predict_fun, metrics_fun(scale=scale, frame_window=config["model_architecture"].get("frame_window", 0), category_number = category_number, segmentation=segmentation, tracking=tracking, tridimensional_mode=tridimensional_mode, exclusion_weight_map=False), disable_augmentation=True, disable_channel_postprocessing=True, verbose=2)
             if isinstance(batch_size, (list, tuple)):
                 tile_column = np.concatenate([np.tile(np.arange(n_t), b_s) for b_s, n_t in zip(batch_size, n_tiles)], axis=0)
             else:
@@ -594,7 +606,7 @@ if __name__ == "__main__":
             if category_number > 1:
                 if segmentation:
                     header += ";"
-                header +="Category"
+                header +="Category" # ;truecatsum;predcatsum;N
             if tracking:
                 header += ";DisplacementL2;LinkMultiplicity"
             if np.any(tile_column != 0):
