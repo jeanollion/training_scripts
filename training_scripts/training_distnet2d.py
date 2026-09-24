@@ -48,8 +48,8 @@ if DETERMINISTIC_MODE:
     tf.keras.utils.set_random_seed(SEED)
     random.seed(42)
 
-__VERSION__ = '1.1.6'
-__REQUIRES__ = ["dataset_iterator>=0.5.8", "distnet2d>=0.2.5" ]
+__VERSION__ = '1.1.7'
+__REQUIRES__ = ["dataset_iterator>=0.5.9", "distnet2d>=0.2.6" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
