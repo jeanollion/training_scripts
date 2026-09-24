@@ -191,7 +191,7 @@ def get_iterator(config, init_iterator, existing_iterator=None, dataset_type="TR
     else:
         all_outputs = None
     if concat:
-        it = ConcatIterator(iterator_list, proportion=concat_proportion, batch_size=config.get("concat_batch_size", 1), step_number=step_number)
+        it = ConcatIterator(iterator_list, proportion=concat_proportion, batch_size=config["dataset_parameters"].get("concat_batch_size", 1), step_number=step_number)
     else:
         it = iterator_list[0]
     if all_outputs is None:
