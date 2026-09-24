@@ -26,8 +26,8 @@ import pix_mclass.training as pmt
 from training_core import open_config_file, get_iterator, should_load_dataset_in_shm, get_shm_info, check_requirements, \
     compare_versions, print_requirement_error, export_fp16_model
 
-__VERSION__ = "1.1.5"
-__REQUIRES__ = ["dataset_iterator>=0.5.8", "PixMClass>=0.1.6" ]
+__VERSION__ = "1.1.6"
+__REQUIRES__ = ["dataset_iterator>=0.5.8", "PixMClass>=0.1.7" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
@@ -79,7 +79,7 @@ if __name__ == "__main__":
     PATIENCE = args.patience if args.patience is not None else t_p.get("patience", 40)
     LR = args.learning_rate if args.learning_rate is not None else t_p.get("learning_rate", 2e-4)
     MIN_LR = args.min_learning_rate if args.min_learning_rate is not None else t_p.get("min_learning_rate", 5e-7)
-    EPSILON_RANGE = t_p.get("epsilon_range", [0.1, 1e-7])
+    EPSILON_RANGE = t_p.get("epsilon_range", [1e-7, 1e-7])
     EPSILON_RANGE = [max(EPSILON_RANGE), min(EPSILON_RANGE)]
     if args.strategy == "multiworker-slurm":
         WORKERS = int(os.environ.get("SLURM_CPUS_PER_TASK", 1))
