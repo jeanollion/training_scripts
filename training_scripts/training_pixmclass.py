@@ -27,7 +27,7 @@ from training_core import open_config_file, get_iterator, should_load_dataset_in
     compare_versions, print_requirement_error, export_fp16_model
 
 __VERSION__ = "1.1.6"
-__REQUIRES__ = ["dataset_iterator>=0.5.8", "PixMClass>=0.1.7" ]
+__REQUIRES__ = ["dataset_iterator>=0.5.8", "PixMClass>=0.1.8" ]
 
 parser = argparse.ArgumentParser()
 parser.add_argument("config_dir", type=str, help="directory containing the configuration file")
